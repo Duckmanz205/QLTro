@@ -1,0 +1,6 @@
+@PhongTroAPI_HostAddress = http://localhost:5137
+
+GET {{PhongTroAPI_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###

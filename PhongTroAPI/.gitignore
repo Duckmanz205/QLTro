@@ -1,0 +1,37 @@
+## Thư mục build và output
+bin/
+obj/
+publish/
+
+## Visual Studio
+.vs/
+*.user
+*.userosscache
+*.sln.doccache
+
+## Visual Studio Code
+.vscode/
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+## Rider (JetBrains)
+.idea/
+*.sln.iml
+
+## File cấu hình cá nhân hoặc nhạy cảm
+appsettings.Development.json
+appsettings.Local.json
+secrets.json
+
+## Log files
+*.log
+
+## Thư mục packages (Nếu dùng NuGet cũ hoặc các gói local)
+*.nupkg
+packages/
+
+## OS Files
+.DS_Store
+Thumbs.db
