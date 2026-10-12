@@ -1,7 +1,6 @@
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
 using PhongTroAPI.Entities;
-using System.Linq;
+using PhongTroAPI.Repositories.Mongo;
 using System.Threading.Tasks;
 
 namespace PhongTroAPI.Controllers
@@ -10,96 +9,70 @@ namespace PhongTroAPI.Controllers
     [ApiController]
     public class NguoiQuanLyController : ControllerBase
     {
-        private readonly QuanLyPhongTroContext _context;
+        private readonly NguoiQuanLyRepository _quanLyRepo;
+        private readonly NganHangRepository _nganHangRepo;
+        private readonly CounterRepository _counterRepo;
 
-        public NguoiQuanLyController(QuanLyPhongTroContext context)
+        public NguoiQuanLyController(
+            NguoiQuanLyRepository quanLyRepo,
+            NganHangRepository nganHangRepo,
+            CounterRepository counterRepo)
         {
-            _context = context;
+            _quanLyRepo = quanLyRepo;
+            _nganHangRepo = nganHangRepo;
+            _counterRepo = counterRepo;
         }
 
-        // GET: api/NguoiQuanLy/5
         [HttpGet("{id}")]
         public async Task<ActionResult<NguoiQuanLy>> GetNguoiQuanLy(int id)
         {
-            var nguoiQuanLy = await _context.NguoiQuanLies
-                .Include(n => n.MaNganHangNavigation)
-                .FirstOrDefaultAsync(n => n.MaQuanLy == id);
+            var nguoiQuanLy = await _quanLyRepo.GetByIdAsync(id);
+            if (nguoiQuanLy == null) return NotFound();
 
-            if (nguoiQuanLy == null)
+            if (nguoiQuanLy.ThongTinNganHang != null && nguoiQuanLy.ThongTinNganHang.MaNganHang.HasValue)
             {
-                return NotFound();
-            }
-
-            if (nguoiQuanLy.MaNganHangNavigation != null)
-            {
-                nguoiQuanLy.TenNganHang = nguoiQuanLy.MaNganHangNavigation.TenNganHang;
-                // Ngăn chặn lỗi vòng lặp JSON (A possible object cycle was detected)
-                nguoiQuanLy.MaNganHangNavigation = null;
+                var bank = await _nganHangRepo.GetByIdAsync(nguoiQuanLy.ThongTinNganHang.MaNganHang.Value);
+                if (bank != null)
+                {
+                    if (nguoiQuanLy.ThongTinNganHang != null) nguoiQuanLy.ThongTinNganHang.TenNganHang = bank.TenNganHang;
+                }
             }
 
             return nguoiQuanLy;
         }
 
-        // PUT: api/NguoiQuanLy/5
         [HttpPut("{id}")]
         public async Task<IActionResult> PutNguoiQuanLy(int id, NguoiQuanLy nguoiQuanLy)
         {
-            if (id != nguoiQuanLy.MaQuanLy)
-            {
-                return BadRequest();
-            }
+            if (id != nguoiQuanLy.MaQuanLy) return BadRequest();
 
-            var existingManager = await _context.NguoiQuanLies.FindAsync(id);
-            if (existingManager == null)
-            {
-                return NotFound();
-            }
+            var existingManager = await _quanLyRepo.GetByIdAsync(id);
+            if (existingManager == null) return NotFound();
 
-            // Xử lý riêng cho Ngân Hàng (lưu Tên thay vì ID)
-            if (!string.IsNullOrEmpty(nguoiQuanLy.TenNganHang))
+            if (!string.IsNullOrEmpty(nguoiQuanLy.ThongTinNganHang?.TenNganHang))
             {
-                var bank = await _context.NganHangs
-                    .FirstOrDefaultAsync(b => b.TenNganHang == nguoiQuanLy.TenNganHang);
+                var allBanks = await _nganHangRepo.GetAllAsync();
+                var bank = allBanks.FirstOrDefault(b => b.TenNganHang == nguoiQuanLy.ThongTinNganHang?.TenNganHang);
                 
                 if (bank == null)
                 {
-                    // Nếu chưa có ngân hàng này trong DB, tự động tạo mới
-                    bank = new NganHang { TenNganHang = nguoiQuanLy.TenNganHang, MaBin = "0000" };
-                    _context.NganHangs.Add(bank);
-                    await _context.SaveChangesAsync();
+                    int newMaNganHang = await _counterRepo.GetNextSequenceValueAsync("nganhang_id");
+                    bank = new NganHang { MaNganHang = newMaNganHang, TenNganHang = nguoiQuanLy.ThongTinNganHang?.TenNganHang, MaBin = "0000" };
+                    await _nganHangRepo.CreateAsync(bank);
                 }
-                existingManager.MaNganHang = bank.MaNganHang;
+                existingManager.ThongTinNganHang.MaNganHang = bank.MaNganHang;
             }
 
-            // Update fields
             existingManager.HoTen = nguoiQuanLy.HoTen;
+            if (existingManager.ThongTinNganHang == null) existingManager.ThongTinNganHang = new PhongTroAPI.Entities.Embedded.ThongTinNganHangItem();
+
             existingManager.Sdt = nguoiQuanLy.Sdt;
             existingManager.Email = nguoiQuanLy.Email;
-            existingManager.SoTaiKhoan = nguoiQuanLy.SoTaiKhoan;
-            existingManager.TenTaiKhoan = nguoiQuanLy.TenTaiKhoan;
+            existingManager.ThongTinNganHang.SoTaiKhoan = nguoiQuanLy.ThongTinNganHang?.SoTaiKhoan;
+            existingManager.ThongTinNganHang.ChuTaiKhoan = nguoiQuanLy.ThongTinNganHang?.ChuTaiKhoan;
 
-            try
-            {
-                await _context.SaveChangesAsync();
-            }
-            catch (DbUpdateConcurrencyException)
-            {
-                if (!NguoiQuanLyExists(id))
-                {
-                    return NotFound();
-                }
-                else
-                {
-                    throw;
-                }
-            }
-
+            await _quanLyRepo.UpdateAsync(id, existingManager);
             return NoContent();
-        }
-
-        private bool NguoiQuanLyExists(int id)
-        {
-            return _context.NguoiQuanLies.Any(e => e.MaQuanLy == id);
         }
     }
 }

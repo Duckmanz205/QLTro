@@ -126,3 +126,9 @@ bin/
 obj/
 **/[Oo]bj/
 .env
+
+# IDE Settings
+.idea/
+
+# Generated Seed Data
+PhongTroAPI/PhongTroAPI/SeedData/Data/*.json

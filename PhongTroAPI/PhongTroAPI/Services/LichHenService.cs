@@ -1,48 +1,61 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using Microsoft.EntityFrameworkCore;
+using System.Threading.Tasks;
 using PhongTroAPI.DTOs;
 using PhongTroAPI.Entities;
+using PhongTroAPI.Repositories.Mongo;
+using PhongTroAPI.Repositories.Redis;
 
 namespace PhongTroAPI.Services
 {
     public class LichHenService
     {
-        private readonly QuanLyPhongTroContext _context;
+        private readonly LichHenRepository _lichHenRepo;
+        private readonly PhongRepository _phongRepo;
+        private readonly CoSoRepository _coSoRepo;
+        private readonly NotificationRepository _notiRepo;
+        private readonly CounterRepository _counterRepo;
 
-        public LichHenService(QuanLyPhongTroContext context)
+        public LichHenService(
+            LichHenRepository lichHenRepo,
+            PhongRepository phongRepo,
+            CoSoRepository coSoRepo,
+            NotificationRepository notiRepo,
+            CounterRepository counterRepo)
         {
-            _context = context;
+            _lichHenRepo = lichHenRepo;
+            _phongRepo = phongRepo;
+            _coSoRepo = coSoRepo;
+            _notiRepo = notiRepo;
+            _counterRepo = counterRepo;
         }
 
-        // 🌟 1. ĐÃ FIX: BỔ SUNG MAKHACH ĐỂ LƯU ĐÚNG ĐỊNH DANH USER ĐĂNG NHẬP
-        public bool CreateLichHen(CreateLichHenDto dto)
+        public async Task<bool> CreateLichHenAsync(CreateLichHenDto dto)
         {
             var lichHen = new LichHenXemPhong
             {
-                MaKhach = dto.MaKhach,        // 🌟 THÊM DÒNG NÀY: Để không bị NULL trong DB, phục vụ hàm load Lịch sử
+                MaLichHen = await _counterRepo.GetNextSequenceValueAsync("lichhen_id"),
+                MaKhach = dto.MaKhach,        
                 HoTenKhach = dto.HoTenKhach ?? "Khách ẩn danh",
-                Sdtkhach = dto.SdtKhach,       // Map chuẩn theo thuộc tính Entity của ông
+                Sdtkhach = dto.SdtKhach,       
                 MaPhong = dto.MaPhong,
                 ThoiGianHen = dto.ThoiGianHen,
                 GhiChu = dto.GhiChu,
-                TrangThai = "Chờ xác nhận",    // Khớp với giá trị mặc định của DB mẫu
+                TrangThai = "Chờ xác nhận",    
                 NgayTao = DateTime.Now
             };
 
-            _context.LichHenXemPhongs.Add(lichHen);
+            await _lichHenRepo.CreateAsync(lichHen);
 
-            // Tìm thông tin phòng và cơ sở để lấy thông tin admin (MaQuanLy) và hiển thị thông báo chi tiết
-            var room = _context.Phongs
-                .Include(p => p.MaCoSoNavigation)
-                .FirstOrDefault(p => p.MaPhong == dto.MaPhong);
+            var room = await _phongRepo.GetByIdAsync(dto.MaPhong);
+            var coSo = room != null ? await _coSoRepo.GetByIdAsync(room.MaCoSo) : null;
 
             if (room != null && dto.MaKhach.HasValue && dto.MaKhach.Value > 0)
             {
-                int? maQuanLy = room.MaCoSoNavigation?.MaQuanLy;
+                int? maQuanLy = coSo?.MaQuanLy;
+                string tenCoSo = coSo?.TenCoSo ?? "";
 
-                // 1. Tạo thông báo cho Admin
                 if (maQuanLy.HasValue)
                 {
                     var thongBaoAdmin = new ThongBao
@@ -50,152 +63,149 @@ namespace PhongTroAPI.Services
                         MaKhach = dto.MaKhach.Value,
                         MaQuanLy = maQuanLy.Value,
                         TieuDe = "Đặt lịch xem phòng mới",
-                        NoiDung = $"Khách hàng {dto.HoTenKhach} đã đặt lịch xem phòng {room.SoPhong} ({room.MaCoSoNavigation?.TenCoSo ?? ""}) vào lúc {dto.ThoiGianHen:dd/MM/yyyy HH:mm}.",
+                        NoiDung = $"Khách hàng {dto.HoTenKhach} đã đặt lịch xem phòng {room.SoPhong} ({tenCoSo}) vào lúc {dto.ThoiGianHen:dd/MM/yyyy HH:mm}.",
                         DaDoc = false,
                         NgayGui = DateTime.Now
                     };
-                    _context.ThongBaos.Add(thongBaoAdmin);
+                    // Push notification to Redis for Admin (using user/admin ID convention or separate queue)
+                    await _notiRepo.AddNotificationAsync(maQuanLy.Value, thongBaoAdmin);
                 }
 
-                // 2. Tạo thông báo cho User
                 var thongBaoUser = new ThongBao
                 {
                     MaKhach = dto.MaKhach.Value,
                     MaQuanLy = maQuanLy,
                     TieuDe = "Đặt lịch xem phòng thành công",
-                    NoiDung = $"Bạn đã đặt lịch xem phòng {room.SoPhong} ({room.MaCoSoNavigation?.TenCoSo ?? ""}) vào lúc {dto.ThoiGianHen:dd/MM/yyyy HH:mm}. Vui lòng chờ admin xác nhận.",
+                    NoiDung = $"Bạn đã đặt lịch xem phòng {room.SoPhong} ({tenCoSo}) vào lúc {dto.ThoiGianHen:dd/MM/yyyy HH:mm}. Vui lòng chờ admin xác nhận.",
                     DaDoc = false,
                     NgayGui = DateTime.Now
                 };
-                _context.ThongBaos.Add(thongBaoUser);
+                await _notiRepo.AddNotificationAsync(dto.MaKhach.Value, thongBaoUser);
             }
 
-            return _context.SaveChanges() > 0;
+            return true;
         }
 
-        // 2. Logic lấy danh sách tổng cho Admin (Giữ nguyên cấu trúc tối ưu của ông)
-        public List<LichHenRenderDto> GetDanhSachLichHen(int? maQuanLy = null)
+        public async Task<List<LichHenRenderDto>> GetDanhSachLichHenAsync(int? maQuanLy = null)
         {
-            var query = _context.LichHenXemPhongs
-                .Include(lh => lh.MaPhongNavigation)               
-                    .ThenInclude(p => p.MaCoSoNavigation)          
-                .AsQueryable();
+            var tatCaLH = await _lichHenRepo.GetAllAsync();
+            var result = new List<LichHenRenderDto>();
 
-            if (maQuanLy.HasValue)
+            foreach (var lh in tatCaLH)
             {
-                query = query.Where(lh => lh.MaPhongNavigation != null &&
-                                          lh.MaPhongNavigation.MaCoSoNavigation != null &&
-                                          lh.MaPhongNavigation.MaCoSoNavigation.MaQuanLy == maQuanLy.Value);
-            }
+                var p = await _phongRepo.GetByIdAsync(lh.MaPhong);
+                var c = p != null ? await _coSoRepo.GetByIdAsync(p.MaCoSo) : null;
 
-            return query
-                .OrderByDescending(lh => lh.ThoiGianHen)
-                .Select(lh => new LichHenRenderDto
+                if (maQuanLy.HasValue && (c == null || c.MaQuanLy != maQuanLy.Value))
+                    continue;
+
+                result.Add(new LichHenRenderDto
                 {
                     MaLichHen = lh.MaLichHen,
                     MaKhach = lh.MaKhach,
                     MaPhong = lh.MaPhong,
                     HoTenKhach = lh.HoTenKhach,
                     SdtKhach = lh.Sdtkhach,
-                    SoPhong = lh.MaPhongNavigation != null ? lh.MaPhongNavigation.SoPhong : "Trống",       
-                    TenCoSo = (lh.MaPhongNavigation != null && lh.MaPhongNavigation.MaCoSoNavigation != null) 
-                                ? lh.MaPhongNavigation.MaCoSoNavigation.TenCoSo : "Chưa rõ cơ sở", 
+                    SoPhong = p?.SoPhong ?? "Trống",       
+                    TenCoSo = c?.TenCoSo ?? "Chưa rõ cơ sở", 
                     ThoiGianHen = lh.ThoiGianHen,
                     TrangThai = lh.TrangThai,
                     GhiChu = lh.GhiChu,
                     NgayTao = lh.NgayTao
-                })
-                .ToList();
+                });
+            }
+
+            return result.OrderByDescending(lh => lh.ThoiGianHen).ToList();
         }
 
-        public bool VerifyOwnership(int maLichHen, int maQuanLy)
+        public async Task<bool> VerifyOwnershipAsync(int maLichHen, int maQuanLy)
         {
-            return _context.LichHenXemPhongs.Any(lh => lh.MaLichHen == maLichHen && 
-                                                       lh.MaPhongNavigation != null && 
-                                                       lh.MaPhongNavigation.MaCoSoNavigation != null && 
-                                                       lh.MaPhongNavigation.MaCoSoNavigation.MaQuanLy == maQuanLy);
+            var lh = await _lichHenRepo.GetByIdAsync(maLichHen);
+            if (lh == null) return false;
+            var p = await _phongRepo.GetByIdAsync(lh.MaPhong);
+            if (p == null) return false;
+            var c = await _coSoRepo.GetByIdAsync(p.MaCoSo);
+            return c != null && c.MaQuanLy == maQuanLy;
         }
 
-        // 3. Cập nhật TRẠNG THÁI lịch hẹn nhanh (Admin Duyệt)
-        public bool UpdateTrangThaiLich(int id, string trangThaiMoi)
+        public async Task<bool> UpdateTrangThaiLichAsync(int id, string trangThaiMoi)
         {
-            var lichHen = _context.LichHenXemPhongs.FirstOrDefault(x => x.MaLichHen == id);
+            var lichHen = await _lichHenRepo.GetByIdAsync(id);
             if (lichHen == null) return false;
 
             lichHen.TrangThai = trangThaiMoi;
-            return _context.SaveChanges() > 0; 
+            await _lichHenRepo.UpdateAsync(id, lichHen);
+            return true; 
         }
 
-        // 4. Cập nhật THÔNG TIN CHI TIẾT (AD_EditLich)
-        public bool UpdateLichHen(int id, CreateLichHenDto dto)
+        public async Task<bool> UpdateLichHenAsync(int id, CreateLichHenDto dto)
         {
-            var lichHen = _context.LichHenXemPhongs.FirstOrDefault(x => x.MaLichHen == id);
+            var lichHen = await _lichHenRepo.GetByIdAsync(id);
             if (lichHen == null) return false;
 
-            lichHen.MaKhach = dto.MaKhach; // Cập nhật thêm liên kết khách nếu cần
+            lichHen.MaKhach = dto.MaKhach; 
             lichHen.HoTenKhach = dto.HoTenKhach;
             lichHen.Sdtkhach = dto.SdtKhach;     
             lichHen.MaPhong = dto.MaPhong;
             lichHen.ThoiGianHen = dto.ThoiGianHen;
             lichHen.GhiChu = dto.GhiChu;
 
-            return _context.SaveChanges() > 0;
+            await _lichHenRepo.UpdateAsync(id, lichHen);
+            return true;
         }
 
-        //  5. Xóa vĩnh viễn khỏi Database
-        public bool DeleteLichHen(int id)
+        public async Task<bool> DeleteLichHenAsync(int id)
         {
-            var lichHen = _context.LichHenXemPhongs.FirstOrDefault(x => x.MaLichHen == id);
-            if (lichHen == null) return false;
-
-            _context.LichHenXemPhongs.Remove(lichHen);
-            return _context.SaveChanges() > 0;
+            await _lichHenRepo.DeleteAsync(id);
+            return true;
         }
 
-        // 6. Lấy chi tiết 1 lịch hẹn (Bẫy rỗng an toàn tránh sập luồng hệ thống)
-        public object? GetLichHenById(int id)
+        public async Task<object?> GetLichHenByIdAsync(int id)
         {
-            var lichHen = _context.LichHenXemPhongs
-                .Include(l => l.MaPhongNavigation)       
-                    .ThenInclude(p => p.MaCoSoNavigation) 
-                .FirstOrDefault(l => l.MaLichHen == id);
+            var lh = await _lichHenRepo.GetByIdAsync(id);
+            if (lh == null) return null;
 
-            if (lichHen == null) return null;
+            var p = await _phongRepo.GetByIdAsync(lh.MaPhong);
+            var c = p != null ? await _coSoRepo.GetByIdAsync(p.MaCoSo) : null;
 
             return new
             {
-                MaLichHen = lichHen.MaLichHen,
-                MaKhach = lichHen.MaKhach,
-                HoTenKhach = lichHen.HoTenKhach,
-                SDTKhach = lichHen.Sdtkhach,
-                ThoiGianHen = lichHen.ThoiGianHen,
-                GhiChu = lichHen.GhiChu,
-                TrangThai = lichHen.TrangThai,
-                SoPhong = lichHen.MaPhongNavigation?.SoPhong ?? "Trống",
-                TenCoSo = lichHen.MaPhongNavigation?.MaCoSoNavigation?.TenCoSo ?? "Chưa rõ cơ sở"
+                MaLichHen = lh.MaLichHen,
+                MaKhach = lh.MaKhach,
+                HoTenKhach = lh.HoTenKhach,
+                SDTKhach = lh.Sdtkhach,
+                ThoiGianHen = lh.ThoiGianHen,
+                GhiChu = lh.GhiChu,
+                TrangThai = lh.TrangThai,
+                SoPhong = p?.SoPhong ?? "Trống",
+                TenCoSo = c?.TenCoSo ?? "Chưa rõ cơ sở"
             };
         }
 
-        // 🌟 7. ĐÃ FIX LUỒNG KIỂM TRA ĐIỀU KIỆN KHI KHÁCH TRA CỨU LỊCH SỬ HẸN
-        public List<LichHenViewDto> GetDanhSachLichHenByKhach(int maKhach)
+        public async Task<List<LichHenViewDto>> GetDanhSachLichHenByKhachAsync(int maKhach)
         {
-            return _context.LichHenXemPhongs
-                .Include(l => l.MaPhongNavigation)
-                    .ThenInclude(p => p.MaCoSoNavigation)
-                .Where(l => l.MaKhach == maKhach) // Giờ điều kiện này đã chạy chuẩn vì MaKhach không còn bị NULL
-                .OrderByDescending(l => l.ThoiGianHen)
-                .Select(l => new LichHenViewDto
+            var tatCaLH = await _lichHenRepo.GetAllAsync();
+            var customerLH = tatCaLH.Where(l => l.MaKhach == maKhach).ToList();
+            
+            var result = new List<LichHenViewDto>();
+            foreach (var l in customerLH)
+            {
+                var p = await _phongRepo.GetByIdAsync(l.MaPhong);
+                var c = p != null ? await _coSoRepo.GetByIdAsync(p.MaCoSo) : null;
+
+                result.Add(new LichHenViewDto
                 {
                     MaLichHen = l.MaLichHen,
-                    SoPhong = l.MaPhongNavigation != null ? l.MaPhongNavigation.SoPhong : "Trống",
-                    TenCoSo = (l.MaPhongNavigation != null && l.MaPhongNavigation.MaCoSoNavigation != null)
-                                ? l.MaPhongNavigation.MaCoSoNavigation.TenCoSo : "Chưa rõ cơ sở",
+                    SoPhong = p?.SoPhong ?? "Trống",
+                    TenCoSo = c?.TenCoSo ?? "Chưa rõ cơ sở",
                     ThoiGianHen = l.ThoiGianHen,
                     GhiChu = l.GhiChu,
                     TrangThai = l.TrangThai ?? "Chờ xác nhận",
                     NgayTao = l.NgayTao
-                })
-                .ToList();
+                });
+            }
+
+            return result.OrderByDescending(l => l.ThoiGianHen).ToList();
         }
     }
 }

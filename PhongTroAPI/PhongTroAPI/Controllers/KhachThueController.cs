@@ -1,8 +1,10 @@
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Authorization;
 using PhongTroAPI.Entities;
 using System.Threading.Tasks;
+using System.Collections.Generic;
+using PhongTroAPI.Repositories.Mongo;
+using System.Linq;
 
 namespace PhongTroAPI.Controllers
 {
@@ -11,19 +13,29 @@ namespace PhongTroAPI.Controllers
     [Authorize]
     public class KhachThueController : ControllerBase
     {
-        private readonly QuanLyPhongTroContext _context;
+        private readonly KhachThueRepository _khachThueRepo;
+        private readonly HopDongRepository _hopDongRepo;
+        private readonly PhongRepository _phongRepo;
+        private readonly CoSoRepository _coSoRepo;
 
-        public KhachThueController(QuanLyPhongTroContext context)
+        public KhachThueController(
+            KhachThueRepository khachThueRepo,
+            HopDongRepository hopDongRepo,
+            PhongRepository phongRepo,
+            CoSoRepository coSoRepo)
         {
-            _context = context;
+            _khachThueRepo = khachThueRepo;
+            _hopDongRepo = hopDongRepo;
+            _phongRepo = phongRepo;
+            _coSoRepo = coSoRepo;
         }
 
         // GET: api/KhachThue
         [HttpGet]
         public async Task<ActionResult<IEnumerable<KhachThue>>> GetKhachThues()
         {
-            // Trả về toàn bộ danh sách khách thuê để Chủ trọ/Quản lý có thể tìm kiếm và lập hợp đồng mới
-            return await _context.KhachThues.ToListAsync();
+            var khachThues = await _khachThueRepo.GetAllAsync();
+            return Ok(khachThues);
         }
 
         // GET: api/KhachThue/5
@@ -33,19 +45,14 @@ namespace PhongTroAPI.Controllers
             var maQuanLyClaim = User.FindFirst("MaQuanLy")?.Value;
             if (int.TryParse(maQuanLyClaim, out int maQuanLy))
             {
-                var belongsToAdmin = await _context.HopDongThues
-                    .Include(hd => hd.MaPhongNavigation)
-                    .ThenInclude(p => p.MaCoSoNavigation)
-                    .AnyAsync(hd => hd.MaKhach == id && hd.MaPhongNavigation.MaCoSoNavigation.MaQuanLy == maQuanLy);
-
+                var belongsToAdmin = await VerifyOwnershipAsync(id, maQuanLy);
                 if (!belongsToAdmin)
                 {
                     return Forbid();
                 }
             }
 
-            var khachThue = await _context.KhachThues
-                .FirstOrDefaultAsync(k => k.MaKhach == id);
+            var khachThue = await _khachThueRepo.GetByIdAsync(id);
 
             if (khachThue == null)
             {
@@ -67,18 +74,14 @@ namespace PhongTroAPI.Controllers
             var maQuanLyClaim = User.FindFirst("MaQuanLy")?.Value;
             if (int.TryParse(maQuanLyClaim, out int maQuanLy))
             {
-                var belongsToAdmin = await _context.HopDongThues
-                    .Include(hd => hd.MaPhongNavigation)
-                    .ThenInclude(p => p.MaCoSoNavigation)
-                    .AnyAsync(hd => hd.MaKhach == id && hd.MaPhongNavigation.MaCoSoNavigation.MaQuanLy == maQuanLy);
-
+                var belongsToAdmin = await VerifyOwnershipAsync(id, maQuanLy);
                 if (!belongsToAdmin)
                 {
                     return Forbid();
                 }
             }
 
-            var existingKhach = await _context.KhachThues.FindAsync(id);
+            var existingKhach = await _khachThueRepo.GetByIdAsync(id);
             if (existingKhach == null)
             {
                 return NotFound("Không tìm thấy khách thuê");
@@ -91,9 +94,29 @@ namespace PhongTroAPI.Controllers
             existingKhach.GioiTinh = khachThue.GioiTinh;
             existingKhach.DiaChiThuongTru = khachThue.DiaChiThuongTru;
 
-            await _context.SaveChangesAsync();
+            await _khachThueRepo.UpdateAsync(id, existingKhach);
 
             return NoContent();
+        }
+
+        private async Task<bool> VerifyOwnershipAsync(int maKhach, int maQuanLy)
+        {
+            var hopDongs = await _hopDongRepo.GetAllAsync();
+            var khachHopDongs = hopDongs.Where(h => h.MaKhach == maKhach).ToList();
+            
+            foreach (var hd in khachHopDongs)
+            {
+                var phong = await _phongRepo.GetByIdAsync(hd.MaPhong);
+                if (phong != null)
+                {
+                    var coSo = await _coSoRepo.GetByIdAsync(phong.MaCoSo);
+                    if (coSo != null && coSo.MaQuanLy == maQuanLy)
+                    {
+                        return true;
+                    }
+                }
+            }
+            return false;
         }
     }
 }

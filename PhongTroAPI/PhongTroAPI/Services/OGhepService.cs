@@ -1,56 +1,70 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using Microsoft.EntityFrameworkCore;
+using System.Threading.Tasks;
 using PhongTroAPI.DTOs;
 using PhongTroAPI.Entities;
+using PhongTroAPI.Repositories.Mongo;
 
 namespace PhongTroAPI.Services
 {
     public class OGhepService
     {
-        private readonly QuanLyPhongTroContext _context;
+        private readonly OGhepRepository _oghepRepo;
+        private readonly PhongRepository _phongRepo;
+        private readonly CoSoRepository _coSoRepo;
+        private readonly HopDongRepository _hopDongRepo;
+        private readonly HoaDonRepository _hoaDonRepo;
+        private readonly KhachThueRepository _khachThueRepo;
+        private readonly CounterRepository _counterRepo;
 
-        public OGhepService(QuanLyPhongTroContext context)
+        public OGhepService(
+            OGhepRepository oghepRepo,
+            PhongRepository phongRepo,
+            CoSoRepository coSoRepo,
+            HopDongRepository hopDongRepo,
+            HoaDonRepository hoaDonRepo,
+            KhachThueRepository khachThueRepo,
+            CounterRepository counterRepo)
         {
-            _context = context;
+            _oghepRepo = oghepRepo;
+            _phongRepo = phongRepo;
+            _coSoRepo = coSoRepo;
+            _hopDongRepo = hopDongRepo;
+            _hoaDonRepo = hoaDonRepo;
+            _khachThueRepo = khachThueRepo;
+            _counterRepo = counterRepo;
         }
 
-        // 🌟 1. LOGIC CHI TIẾT Ở GHÉP: TÍNH HOÁ ĐƠN CHIA ĐỀU CHO MOBILE APP
-        public OGhepViewDto? GetChiTietOGhepTheoPhong(int maPhong)
+        public async Task<OGhepViewDto?> GetChiTietOGhepTheoPhongAsync(int maPhong)
         {
-            // Lấy thông tin phòng và cơ sở
-            var phong = _context.Phongs
-                .Include(p => p.MaCoSoNavigation)
-                .FirstOrDefault(p => p.MaPhong == maPhong);
-
+            var phong = await _phongRepo.GetByIdAsync(maPhong);
             if (phong == null) return null;
 
-            // Tìm tất cả hợp đồng "Đang hiệu lực" của phòng này
-            var danhSachHopDong = _context.HopDongThues
-                .Include(h => h.MaKhachNavigation)
+            var coSo = await _coSoRepo.GetByIdAsync(phong.MaCoSo);
+
+            var tatCaHopDong = await _hopDongRepo.GetAllAsync();
+            var danhSachHopDong = tatCaHopDong
                 .Where(h => h.MaPhong == maPhong && h.TrangThai == "Đang hiệu lực")
                 .OrderBy(h => h.NgayBatDau)
                 .ToList();
 
             int soNguoiO = danhSachHopDong.Count;
 
-            // Lấy hóa đơn mới nhất của phòng này
-            var hoaDonMoiNhat = _context.HoaDons
+            var tatCaHoaDon = await _hoaDonRepo.GetAllAsync();
+            var hoaDonMoiNhat = tatCaHoaDon
                 .Where(h => h.MaPhong == maPhong)
                 .OrderByDescending(h => h.Nam)
                 .ThenByDescending(h => h.Thang)
                 .FirstOrDefault();
 
             decimal tongHoaDon = hoaDonMoiNhat?.TongTien ?? phong.GiaThue; 
-            
-            // Ép kiểu chia toán học decimal an toàn không lo sập luồng
             decimal tienChiaDeu = soNguoiO > 0 ? (tongHoaDon / (decimal)soNguoiO) : tongHoaDon;
 
             var dto = new OGhepViewDto
             {
                 SoPhong = phong.SoPhong,
-                TenCoSo = phong.MaCoSoNavigation?.TenCoSo ?? "Chưa rõ cơ sở",
+                TenCoSo = coSo?.TenCoSo ?? "Chưa rõ cơ sở",
                 SoNguoiO = soNguoiO == 0 ? 1 : soNguoiO, 
                 TongHoaDon = tongHoaDon,
                 TienChiaDeu = tienChiaDeu
@@ -78,6 +92,7 @@ namespace PhongTroAPI.Services
                 {
                     var hd = danhSachHopDong[i];
                     bool isChuPhong = (i == 0); 
+                    var khach = await _khachThueRepo.GetByIdAsync(hd.MaKhach);
 
                     string trangThaiThanhToan = "Chưa trả";
                     if (hoaDonMoiNhat != null)
@@ -102,9 +117,9 @@ namespace PhongTroAPI.Services
                     dto.ThanhViens.Add(new ThanhVienOGhepDto
                     {
                         MaKhach = hd.MaKhach,
-                        HoTen = hd.MaKhachNavigation?.HoTen ?? "Khách ở ghép",
+                        HoTen = khach?.HoTen ?? "Khách ở ghép",
                         VaiTro = isChuPhong ? "Chủ phòng" : "Ở ghép",
-                        TrangThaiThanhToan = trangThaiThanhToan == "Đã trả" ? "Đã trả" : "Chưa trả",
+                        TrangThaiThanhToan = trangThaiThanhToan,
                         ConPhaiTra = conPhaiTra
                     });
                 }
@@ -117,14 +132,14 @@ namespace PhongTroAPI.Services
             return dto;
         }
 
-        // 🌟 2. TẠO BÀI ĐĂNG TÌM Ở GHÉP MỚI
-        public bool CreateOGhep(CreateOGhepDto dto)
+        public async Task<bool> CreateOGhepAsync(CreateOGhepDto dto)
         {
-            var khach = _context.KhachThues.Find(dto.MaKhach);
+            var khach = await _khachThueRepo.GetByIdAsync(dto.MaKhach);
             if (khach == null) return false;
 
-            var oghep = new Oghep
+            var oghep = new OGhep
             {
+                MaBaiDang = await _counterRepo.GetNextSequenceValueAsync("oghep_id"),
                 MaKhach = dto.MaKhach,
                 TieuDe = dto.TieuDe,
                 NoiDung = dto.NoiDung,
@@ -135,21 +150,24 @@ namespace PhongTroAPI.Services
                 NgayDang = DateTime.Now
             };
 
-            _context.Ogheps.Add(oghep);
-            return _context.SaveChanges() > 0;
+            await _oghepRepo.CreateAsync(oghep);
+            return true;
         }
 
-        // 🌟 3. LẤY TẤT CẢ BÀI ĐĂNG TÌM Ở GHÉP
-        public List<OGhepRenderDto> GetAllOGheps()
+        public async Task<List<OGhepRenderDto>> GetAllOGhepsAsync()
         {
-            return _context.Ogheps
-                .Include(o => o.MaKhachNavigation)
-                .Select(o => new OGhepRenderDto
+            var tatCaOGhep = await _oghepRepo.GetAllAsync();
+            var result = new List<OGhepRenderDto>();
+
+            foreach (var o in tatCaOGhep)
+            {
+                var khach = await _khachThueRepo.GetByIdAsync(o.MaKhach);
+                result.Add(new OGhepRenderDto
                 {
                     MaBaiDang = o.MaBaiDang,
                     MaKhach = o.MaKhach,
-                    TenKhach = o.MaKhachNavigation.HoTen ?? "N/A",
-                    SDTKhach = o.MaKhachNavigation.Sdt ?? "N/A",
+                    TenKhach = khach?.HoTen ?? "N/A",
+                    SDTKhach = khach?.Sdt ?? "N/A",
                     TieuDe = o.TieuDe,
                     NoiDung = o.NoiDung,
                     ChiPhiDuKien = o.ChiPhiDuKien,
@@ -157,37 +175,36 @@ namespace PhongTroAPI.Services
                     YeuCauGioiTinh = o.YeuCauGioiTinh,
                     TrangThai = o.TrangThai,
                     NgayDang = o.NgayDang
-                })
-                .ToList();
+                });
+            }
+            return result;
         }
 
-        // 🌟 4. LẤY CHI TIẾT BÀI ĐĂNG Ở GHÉP THEO ID BÀI ĐĂNG
-        public OGhepRenderDto? GetOGhepById(int id)
+        public async Task<OGhepRenderDto?> GetOGhepByIdAsync(int id)
         {
-            return _context.Ogheps
-                .Include(o => o.MaKhachNavigation)
-                .Where(o => o.MaBaiDang == id)
-                .Select(o => new OGhepRenderDto
-                {
-                    MaBaiDang = o.MaBaiDang,
-                    MaKhach = o.MaKhach,
-                    TenKhach = o.MaKhachNavigation.HoTen ?? "N/A",
-                    SDTKhach = o.MaKhachNavigation.Sdt ?? "N/A",
-                    TieuDe = o.TieuDe,
-                    NoiDung = o.NoiDung,
-                    ChiPhiDuKien = o.ChiPhiDuKien,
-                    KhuVuc = o.KhuVuc,
-                    YeuCauGioiTinh = o.YeuCauGioiTinh,
-                    TrangThai = o.TrangThai,
-                    NgayDang = o.NgayDang
-                })
-                .FirstOrDefault();
+            var o = await _oghepRepo.GetByIdAsync(id);
+            if (o == null) return null;
+
+            var khach = await _khachThueRepo.GetByIdAsync(o.MaKhach);
+            return new OGhepRenderDto
+            {
+                MaBaiDang = o.MaBaiDang,
+                MaKhach = o.MaKhach,
+                TenKhach = khach?.HoTen ?? "N/A",
+                SDTKhach = khach?.Sdt ?? "N/A",
+                TieuDe = o.TieuDe,
+                NoiDung = o.NoiDung,
+                ChiPhiDuKien = o.ChiPhiDuKien,
+                KhuVuc = o.KhuVuc,
+                YeuCauGioiTinh = o.YeuCauGioiTinh,
+                TrangThai = o.TrangThai,
+                NgayDang = o.NgayDang
+            };
         }
 
-        // 🌟 5. CẬP NHẬT NỘI DUNG BÀI ĐĂNG Ở GHÉP
-        public bool UpdateOGhep(int id, CreateOGhepDto dto)
+        public async Task<bool> UpdateOGhepAsync(int id, CreateOGhepDto dto)
         {
-            var oghep = _context.Ogheps.Find(id);
+            var oghep = await _oghepRepo.GetByIdAsync(id);
             if (oghep == null) return false;
 
             oghep.TieuDe = dto.TieuDe;
@@ -196,27 +213,24 @@ namespace PhongTroAPI.Services
             oghep.KhuVuc = dto.KhuVuc;
             oghep.YeuCauGioiTinh = dto.YeuCauGioiTinh;
 
-            return _context.SaveChanges() > 0;
+            await _oghepRepo.UpdateAsync(id, oghep);
+            return true;
         }
 
-        // 🌟 6. CẬP NHẬT TRẠNG THÁI BÀI ĐĂNG (ĐÃ TÌM ĐƯỢC / ẨN)
-        public bool UpdateTrangThai(int id, string trangThai)
+        public async Task<bool> UpdateTrangThaiAsync(int id, string trangThai)
         {
-            var oghep = _context.Ogheps.Find(id);
+            var oghep = await _oghepRepo.GetByIdAsync(id);
             if (oghep == null) return false;
 
             oghep.TrangThai = trangThai;
-            return _context.SaveChanges() > 0;
+            await _oghepRepo.UpdateAsync(id, oghep);
+            return true;
         }
 
-        // 🌟 7. XÓA BÀI ĐĂNG Ở GHÉP
-        public bool DeleteOGhep(int id)
+        public async Task<bool> DeleteOGhepAsync(int id)
         {
-            var oghep = _context.Ogheps.Find(id);
-            if (oghep == null) return false;
-
-            _context.Ogheps.Remove(oghep);
-            return _context.SaveChanges() > 0;
+            await _oghepRepo.DeleteAsync(id);
+            return true;
         }
     }
 }

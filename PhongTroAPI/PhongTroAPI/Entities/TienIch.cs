@@ -1,15 +1,13 @@
-﻿using System;
-using System.Collections.Generic;
+using System;
+using MongoDB.Bson.Serialization.Attributes;
 
-namespace PhongTroAPI.Entities;
-
-public partial class TienIch
+namespace PhongTroAPI.Entities
 {
-    public int MaTienIch { get; set; }
-
-    public string? TenTienIch { get; set; }
-
-    public virtual ICollection<CoSo> MaCoSos { get; set; } = new List<CoSo>();
-
-    public virtual ICollection<Phong> MaPhongs { get; set; } = new List<Phong>();
+    public partial class TienIch
+    {
+        [BsonId]
+        public int MaTienIch { get; set; }
+        
+        public string? TenTienIch { get; set; }
+    }
 }

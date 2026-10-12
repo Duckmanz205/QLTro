@@ -1,4 +1,3 @@
-using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
 using PhongTroAPI.Entities;
@@ -9,9 +8,11 @@ using System.Text.Json.Serialization;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// DB Context
-builder.Services.AddDbContext<QuanLyPhongTroContext>(options =>
-    options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));
+// NoSQL DB Contexts
+builder.Services.AddSingleton<PhongTroAPI.DataAccess.MongoDbContext>();
+builder.Services.AddSingleton<PhongTroAPI.DataAccess.Neo4jDbContext>();
+builder.Services.AddSingleton<PhongTroAPI.DataAccess.RedisDbContext>();
+builder.Services.AddSingleton<PhongTroAPI.DataAccess.ElasticDbContext>();
 
 //  CONFIG CONTROLLERS: Tối ưu hóa cấu hình JSON chống mất trường MaKhach
 builder.Services.AddControllers().AddJsonOptions(options =>
@@ -29,13 +30,42 @@ builder.Services.AddControllers().AddJsonOptions(options =>
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
+// Register NoSQL Repositories
+builder.Services.AddScoped<PhongTroAPI.Repositories.Mongo.ChiSoRepository>();
+builder.Services.AddScoped<PhongTroAPI.Repositories.Mongo.CoSoRepository>();
+builder.Services.AddScoped<PhongTroAPI.Repositories.Mongo.CounterRepository>();
+builder.Services.AddScoped<PhongTroAPI.Repositories.Mongo.HoaDonRepository>();
+builder.Services.AddScoped<PhongTroAPI.Repositories.Mongo.HopDongRepository>();
+builder.Services.AddScoped<PhongTroAPI.Repositories.Mongo.KhachThueRepository>();
+builder.Services.AddScoped<PhongTroAPI.Repositories.Mongo.LichHenRepository>();
+builder.Services.AddScoped<PhongTroAPI.Repositories.Mongo.NganHangRepository>();
+builder.Services.AddScoped<PhongTroAPI.Repositories.Mongo.NguoiQuanLyRepository>();
+builder.Services.AddScoped<PhongTroAPI.Repositories.Mongo.OGhepRepository>();
+builder.Services.AddScoped<PhongTroAPI.Repositories.Mongo.PhongRepository>();
+builder.Services.AddScoped<PhongTroAPI.Repositories.Mongo.SuCoRepository>();
+builder.Services.AddScoped<PhongTroAPI.Repositories.Mongo.TaiKhoanRepository>();
+builder.Services.AddScoped<PhongTroAPI.Repositories.Mongo.TienIchRepository>();
+builder.Services.AddScoped<PhongTroAPI.Repositories.Mongo.TinNhanRepository>();
+builder.Services.AddScoped<PhongTroAPI.Repositories.Neo4j.GraphRepository>();
+builder.Services.AddScoped<PhongTroAPI.Repositories.Redis.CacheRepository>();
+builder.Services.AddScoped<PhongTroAPI.Repositories.Redis.NotificationRepository>();
+builder.Services.AddScoped<PhongTroAPI.Repositories.Redis.SessionRepository>();
+builder.Services.AddScoped<PhongTroAPI.Repositories.Elastic.AnalyticsRepository>();
+builder.Services.AddScoped<PhongTroAPI.Repositories.Elastic.SearchRepository>();
+
 // Register Custom Services
 builder.Services.AddScoped<HopDongService>();
 builder.Services.AddScoped<OGhepService>();
 builder.Services.AddScoped<LichHenService>();
-
-// Services
+builder.Services.AddScoped<SyncService>();
+builder.Services.AddScoped<GraphService>();
 builder.Services.AddScoped<PhongTroAPI.Services.IInvoiceService, PhongTroAPI.Services.InvoiceService>();
+
+// Register Seeders
+builder.Services.AddScoped<PhongTroAPI.SeedData.MongoSeeder>();
+builder.Services.AddScoped<PhongTroAPI.SeedData.ElasticSeeder>();
+builder.Services.AddScoped<PhongTroAPI.SeedData.Neo4jSeeder>();
+builder.Services.AddScoped<PhongTroAPI.SeedData.DataSeeder>();
 
 // ✅ JWT Authentication
 var jwtSecret = builder.Configuration["JwtSettings:SecretKey"]!;
@@ -68,6 +98,13 @@ builder.Services.AddCors(options =>
 });
 
 var app = builder.Build();
+
+// Seed Data (Đã chạy ở Phase 6)
+// using (var scope = app.Services.CreateScope())
+// {
+//     var seeder = scope.ServiceProvider.GetRequiredService<PhongTroAPI.SeedData.DataSeeder>();
+//     await seeder.SeedAllAsync();
+// }
 
 // Swagger
 if (app.Environment.IsDevelopment())

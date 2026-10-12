@@ -1,9 +1,14 @@
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
 using PhongTroAPI.DTOs;
 using PhongTroAPI.Entities;
+using PhongTroAPI.Entities.Embedded;
 using Microsoft.AspNetCore.Authorization;
-
+using System.Threading.Tasks;
+using System.Linq;
+using System;
+using System.IO;
+using System.Collections.Generic;
+using PhongTroAPI.Repositories.Mongo;
 
 namespace PhongTroAPI.Controllers
 {
@@ -12,101 +17,110 @@ namespace PhongTroAPI.Controllers
     [Authorize]
     public class CoSoController : ControllerBase
     {
-        private readonly QuanLyPhongTroContext _context;
+        private readonly CoSoRepository _coSoRepo;
+        private readonly PhongRepository _phongRepo;
+        private readonly NguoiQuanLyRepository _quanLyRepo;
+        private readonly TienIchRepository _tienIchRepo;
+        private readonly CounterRepository _counterRepo;
 
-        public CoSoController(QuanLyPhongTroContext context)
+        public CoSoController(
+            CoSoRepository coSoRepo,
+            PhongRepository phongRepo,
+            NguoiQuanLyRepository quanLyRepo,
+            TienIchRepository tienIchRepo,
+            CounterRepository counterRepo)
         {
-            _context = context;
+            _coSoRepo = coSoRepo;
+            _phongRepo = phongRepo;
+            _quanLyRepo = quanLyRepo;
+            _tienIchRepo = tienIchRepo;
+            _counterRepo = counterRepo;
         }
-
 
         // GET: danh sách cơ sở
         [HttpGet]
         [AllowAnonymous]
         public async Task<IActionResult> GetAll()
         {
-            var query = _context.CoSos.AsNoTracking().AsQueryable();
-
+            var coSos = await _coSoRepo.GetAllAsync();
             var maQuanLyClaim = User.FindFirst("MaQuanLy")?.Value;
             if (int.TryParse(maQuanLyClaim, out int maQuanLy))
             {
-                query = query.Where(cs => cs.MaQuanLy == maQuanLy);
+                coSos = coSos.Where(cs => cs.MaQuanLy == maQuanLy).ToList();
             }
-
-            var data = await query.ToListAsync();
-            return Ok(data);
+            return Ok(coSos);
         }
-
 
         // GET: chi tiết cơ sở + phòng + ảnh + quản lý + bản đồ
         [HttpGet("{id}")]
         [AllowAnonymous]
         public async Task<IActionResult> GetDetail(int id)
         {
+            var cs = await _coSoRepo.GetByIdAsync(id);
+            if (cs == null) return NotFound("Không tìm thấy cơ sở");
+
             var maQuanLyClaim = User.FindFirst("MaQuanLy")?.Value;
             if (int.TryParse(maQuanLyClaim, out int maQuanLy))
             {
-                var belongsToAdmin = await _context.CoSos.AnyAsync(cs => cs.MaCoSo == id && cs.MaQuanLy == maQuanLy);
-                if (!belongsToAdmin)
+                if (cs.MaQuanLy != maQuanLy)
                 {
                     return Forbid("Bạn không có quyền truy cập cơ sở này.");
                 }
             }
 
-            var data = await _context.CoSos
-                .AsNoTracking()
-                .Where(cs => cs.MaCoSo == id)
-                .Select(cs => new
-                {
-                    maCoSo = cs.MaCoSo,
-                    tenCoSo = cs.TenCoSo,
-                    diaChi = cs.DiaChi,
-                    loaiHinh = cs.LoaiHinh,
-                    maQuanLy = cs.MaQuanLy,
-                    moTa = cs.MoTa,
-                    latitude = cs.Latitude,
-                    longitude = cs.Longitude,
-                    donGiaDien = cs.DonGiaDien,
-                    donGiaNuoc = cs.DonGiaNuoc,
+            var phongs = await _phongRepo.GetAllAsync();
+            var coSoPhongs = phongs.Where(p => p.MaCoSo == id).ToList();
+            
+            var quanLy = cs.MaQuanLy.HasValue ? await _quanLyRepo.GetByIdAsync(cs.MaQuanLy.Value) : null;
 
-                    tenQuanLy = cs.MaQuanLyNavigation != null ? cs.MaQuanLyNavigation.HoTen : null,
-                    soDienThoaiQuanLy = cs.MaQuanLyNavigation != null ? cs.MaQuanLyNavigation.Sdt : null,
-                    emailQuanLy = cs.MaQuanLyNavigation != null ? cs.MaQuanLyNavigation.Email : null,
+            var hinhAnhChinh = cs.HinhAnhCoSos
+                .OrderByDescending(x => x.IsMain)
+                .ThenBy(x => x.MaAnh)
+                .Select(x => x.UrlAnh)
+                .FirstOrDefault();
 
-                    hinhAnhCoSo = _context.HinhAnhCoSos
-                        .Where(x => x.MaCoSo == cs.MaCoSo)
-                        .OrderByDescending(x => x.IsMain)
-                        .ThenBy(x => x.MaAnh)
-                        .Select(x => x.UrlAnh)
-                        .FirstOrDefault(),
+            var data = new
+            {
+                maCoSo = cs.MaCoSo,
+                tenCoSo = cs.TenCoSo,
+                diaChi = cs.DiaChi,
+                loaiHinh = cs.LoaiHinh,
+                maQuanLy = cs.MaQuanLy,
+                moTa = cs.MoTa,
+                latitude = cs.Latitude,
+                longitude = cs.Longitude,
+                donGiaDien = cs.DonGiaDien,
+                donGiaNuoc = cs.DonGiaNuoc,
 
-                    tongPhong = cs.Phongs.Count(),
-                    phongTrong = cs.Phongs.Count(p => p.TrangThai == "Trống"),
-                    daThue = cs.Phongs.Count(p => p.TrangThai == "Đang thuê"),
+                tenQuanLy = quanLy?.HoTen,
+                soDienThoaiQuanLy = quanLy?.Sdt,
+                emailQuanLy = quanLy?.Email,
 
-                    tienIches = cs.MaTienIches
-                        .OrderBy(t => t.TenTienIch)
-                        .Select(t => new
-                        {
-                            maTienIch = t.MaTienIch,
-                            tenTienIch = t.TenTienIch
-                        })
-                        .ToList(),
+                hinhAnhCoSo = hinhAnhChinh,
 
-                    phongs = cs.Phongs
-                        .OrderBy(p => p.SoPhong)
-                        .Select(p => new
-                        {
-                            maPhong = p.MaPhong,
-                            soPhong = p.SoPhong,
-                            trangThai = p.TrangThai
-                        })
-                        .ToList()
-                })
-                .FirstOrDefaultAsync();
+                tongPhong = coSoPhongs.Count,
+                phongTrong = coSoPhongs.Count(p => p.TrangThai == "Trống"),
+                daThue = coSoPhongs.Count(p => p.TrangThai == "Đang thuê"),
 
-            if (data == null)
-                return NotFound("Không tìm thấy cơ sở");
+                tienIches = cs.TienIches
+                    .OrderBy(t => t.TenTienIch)
+                    .Select(t => new
+                    {
+                        maTienIch = t.MaTienIch,
+                        tenTienIch = t.TenTienIch
+                    })
+                    .ToList(),
+
+                phongs = coSoPhongs
+                    .OrderBy(p => p.SoPhong)
+                    .Select(p => new
+                    {
+                        maPhong = p.MaPhong,
+                        soPhong = p.SoPhong,
+                        trangThai = p.TrangThai
+                    })
+                    .ToList()
+            };
 
             return Ok(data);
         }
@@ -116,43 +130,39 @@ namespace PhongTroAPI.Controllers
         [AllowAnonymous]
         public async Task<IActionResult> GetPhongByCoSo(int id)
         {
+            var cs = await _coSoRepo.GetByIdAsync(id);
+            if (cs == null) return NotFound("Không tìm thấy cơ sở");
+
             var maQuanLyClaim = User.FindFirst("MaQuanLy")?.Value;
             if (int.TryParse(maQuanLyClaim, out int maQuanLy))
             {
-                var belongsToAdmin = await _context.CoSos.AnyAsync(cs => cs.MaCoSo == id && cs.MaQuanLy == maQuanLy);
-                if (!belongsToAdmin)
-                {
-                    return Forbid();
-                }
+                if (cs.MaQuanLy != maQuanLy) return Forbid();
             }
 
-            var data = await _context.Phongs
-                .Where(p => p.MaCoSo == id)
-                .ToListAsync();
+            var phongs = await _phongRepo.GetAllAsync();
+            var data = phongs.Where(p => p.MaCoSo == id).ToList();
 
             return Ok(data);
         }
 
-
-        // GET: thống kê cơ sở_DASHBOARD
-        //quản lý
-
         [HttpGet("managers")]
         public async Task<IActionResult> GetManagers()
         {
-            var data = await _context.Set<NguoiQuanLy>()
-                .AsNoTracking()
-                .Where(ql => ql.CoSos.Any())
+            var allQuanLy = await _quanLyRepo.GetAllAsync();
+            var allCoSo = await _coSoRepo.GetAllAsync();
+
+            var data = allQuanLy
                 .Select(ql => new
                 {
-                    ql.MaQuanLy,
+                    MaQuanLy = ql.MaQuanLy,
                     TenQuanLy = ql.HoTen,
                     SoDienThoai = ql.Sdt,
-                    ql.Email,
-                    SoCoSo = ql.CoSos.Count
+                    Email = ql.Email,
+                    SoCoSo = allCoSo.Count(cs => cs.MaQuanLy == ql.MaQuanLy)
                 })
+                .Where(x => x.SoCoSo > 0)
                 .OrderBy(x => x.MaQuanLy)
-                .ToListAsync();
+                .ToList();
 
             return Ok(data);
         }
@@ -166,47 +176,39 @@ namespace PhongTroAPI.Controllers
                 return Unauthorized("Không tìm thấy mã người quản lý hợp lệ trong token.");
             }
 
-            var query = _context.CoSos.AsQueryable().Where(cs => cs.MaQuanLy == maQuanLy);
+            var tatCaCoSo = await _coSoRepo.GetAllAsync();
+            var coSos = tatCaCoSo.Where(cs => cs.MaQuanLy == maQuanLy).ToList();
+            var tatCaPhong = await _phongRepo.GetAllAsync();
 
-            var data = await query
-                .AsNoTracking()
-                .Select(cs => new
+            var data = new List<object>();
+
+            foreach (var cs in coSos)
+            {
+                var phongs = tatCaPhong.Where(p => p.MaCoSo == cs.MaCoSo).ToList();
+                var hinhAnhChinh = cs.HinhAnhCoSos
+                    .OrderByDescending(x => x.IsMain)
+                    .ThenBy(x => x.MaAnh)
+                    .Select(x => x.UrlAnh)
+                    .FirstOrDefault();
+
+                data.Add(new
                 {
                     maCoSo = cs.MaCoSo,
                     tenCoSo = cs.TenCoSo,
                     diaChi = cs.DiaChi,
-
-                    status = string.IsNullOrWhiteSpace(cs.TrangThai)
-                        ? "Hoạt động"
-                        : cs.TrangThai,
-
-                    tongPhong = cs.Phongs.Count(),
-                    phongTrong = cs.Phongs.Count(p => p.TrangThai == "Trống"),
-                    dangThue = cs.Phongs.Count(p => p.TrangThai == "Đang thuê"),
-                    baoTri = cs.Phongs.Count(p => p.TrangThai == "Bảo trì"),
-
-                    tongDoanhThu = cs.Phongs
-                        .Where(p => p.TrangThai == "Đang thuê")
-                        .Sum(p => (decimal?)p.GiaThue) ?? 0,
-
-                    hinhAnhCoSo = _context.HinhAnhCoSos
-                        .Where(x => x.MaCoSo == cs.MaCoSo)
-                        .OrderByDescending(x => x.IsMain)
-                        .ThenBy(x => x.MaAnh)
-                        .Select(x => x.UrlAnh)
-                        .FirstOrDefault(),
-
-                    tienIches = cs.MaTienIches
-                        .OrderBy(t => t.TenTienIch)
-                        .Select(t => t.TenTienIch)
-                        .ToList()
-                })
-                .ToListAsync();
+                    status = string.IsNullOrWhiteSpace(cs.TrangThai) ? "Hoạt động" : cs.TrangThai,
+                    tongPhong = phongs.Count,
+                    phongTrong = phongs.Count(p => p.TrangThai == "Trống"),
+                    dangThue = phongs.Count(p => p.TrangThai == "Đang thuê"),
+                    baoTri = phongs.Count(p => p.TrangThai == "Bảo trì"),
+                    tongDoanhThu = phongs.Where(p => p.TrangThai == "Đang thuê").Sum(p => (decimal?)p.GiaThue) ?? 0,
+                    hinhAnhCoSo = hinhAnhChinh,
+                    tienIches = cs.TienIches.OrderBy(t => t.TenTienIch).Select(t => t.TenTienIch).ToList()
+                });
+            }
 
             return Ok(data);
         }
-
-        // POST: tạo cơ sở
 
         [HttpPost]
         public async Task<IActionResult> Create(CoSoUpsertDto model)
@@ -223,40 +225,36 @@ namespace PhongTroAPI.Controllers
                 return Unauthorized("Không tìm thấy mã người quản lý hợp lệ trong token.");
             }
 
+            var maCoSo = await _counterRepo.GetNextSequenceValueAsync("coso_id");
+
             var coSo = new CoSo
             {
+                MaCoSo = maCoSo,
                 TenCoSo = model.TenCoSo.Trim(),
                 DiaChi = model.DiaChi.Trim(),
                 LoaiHinh = model.LoaiHinh,
                 MoTa = string.IsNullOrWhiteSpace(model.MoTa) ? null : model.MoTa.Trim(),
                 MaQuanLy = maQuanLy,
                 Latitude = model.Latitude,
-                Longitude = model.Longitude
+                Longitude = model.Longitude,
+                TienIches = new List<TienIchItem>()
             };
 
-            if (model.MaTienIchIds.Any())
+            if (model.MaTienIchIds != null && model.MaTienIchIds.Any())
             {
-                var tienIchList = await _context.TienIches
-                    .Where(x => model.MaTienIchIds.Contains(x.MaTienIch))
-                    .ToListAsync();
+                var allTienIch = await _tienIchRepo.GetAllAsync();
+                var tienIchList = allTienIch.Where(x => model.MaTienIchIds.Contains(x.MaTienIch)).ToList();
 
                 foreach (var item in tienIchList)
                 {
-                    coSo.MaTienIches.Add(item);
+                    coSo.TienIches.Add(new TienIchItem { MaTienIch = item.MaTienIch, TenTienIch = item.TenTienIch });
                 }
             }
 
-            _context.CoSos.Add(coSo);
-            await _context.SaveChangesAsync();
+            await _coSoRepo.CreateAsync(coSo);
 
-            return Ok(new
-            {
-                coSo.MaCoSo,
-                coSo.TenCoSo
-            });
+            return Ok(new { coSo.MaCoSo, coSo.TenCoSo });
         }
-
-        // PUT: cập nhật cơ sở
 
         [HttpPut("{id}")]
         public async Task<IActionResult> Update(int id, CoSoUpsertDto model)
@@ -267,17 +265,10 @@ namespace PhongTroAPI.Controllers
                 return Unauthorized("Không tìm thấy mã người quản lý hợp lệ trong token.");
             }
 
-            var coSo = await _context.CoSos
-                .Include(x => x.MaTienIches)
-                .FirstOrDefaultAsync(x => x.MaCoSo == id);
+            var coSo = await _coSoRepo.GetByIdAsync(id);
+            if (coSo == null) return NotFound("Không tìm thấy cơ sở");
 
-            if (coSo == null)
-                return NotFound("Không tìm thấy cơ sở");
-
-            if (coSo.MaQuanLy != maQuanLy)
-            {
-                return Forbid();
-            }
+            if (coSo.MaQuanLy != maQuanLy) return Forbid();
 
             coSo.TenCoSo = model.TenCoSo.Trim();
             coSo.DiaChi = model.DiaChi.Trim();
@@ -286,21 +277,20 @@ namespace PhongTroAPI.Controllers
             coSo.Latitude = model.Latitude;
             coSo.Longitude = model.Longitude;
 
-            coSo.MaTienIches.Clear();
+            coSo.TienIches.Clear();
 
-            if (model.MaTienIchIds.Any())
+            if (model.MaTienIchIds != null && model.MaTienIchIds.Any())
             {
-                var tienIchList = await _context.TienIches
-                    .Where(x => model.MaTienIchIds.Contains(x.MaTienIch))
-                    .ToListAsync();
+                var allTienIch = await _tienIchRepo.GetAllAsync();
+                var tienIchList = allTienIch.Where(x => model.MaTienIchIds.Contains(x.MaTienIch)).ToList();
 
                 foreach (var item in tienIchList)
                 {
-                    coSo.MaTienIches.Add(item);
+                    coSo.TienIches.Add(new TienIchItem { MaTienIch = item.MaTienIch, TenTienIch = item.TenTienIch });
                 }
             }
 
-            await _context.SaveChangesAsync();
+            await _coSoRepo.UpdateAsync(id, coSo);
 
             return Ok(new
             {
@@ -312,43 +302,38 @@ namespace PhongTroAPI.Controllers
                 maQuanLy = coSo.MaQuanLy,
                 latitude = coSo.Latitude,
                 longitude = coSo.Longitude,
-                maTienIchIds = coSo.MaTienIches
-                    .Select(x => x.MaTienIch)
-                    .ToList()
+                maTienIchIds = coSo.TienIches.Select(x => x.MaTienIch).ToList()
             });
         }
-        //lấy danh sách hình ảnh của 1 cơ sở theo id
+
         [HttpGet("{id}/images")]
         [AllowAnonymous]
         public async Task<IActionResult> GetImages(int id)
         {
-            var exists = await _context.CoSos.AnyAsync(x => x.MaCoSo == id);
-            if (!exists)
-                return NotFound("Không tìm thấy cơ sở");
+            var coSo = await _coSoRepo.GetByIdAsync(id);
+            if (coSo == null) return NotFound("Không tìm thấy cơ sở");
 
             var maQuanLyClaim = User.FindFirst("MaQuanLy")?.Value;
             if (int.TryParse(maQuanLyClaim, out int maQuanLy))
             {
-                var belongs = await _context.CoSos.AnyAsync(x => x.MaCoSo == id && x.MaQuanLy == maQuanLy);
-                if (!belongs) return Forbid();
+                if (coSo.MaQuanLy != maQuanLy) return Forbid();
             }
 
-            var data = await _context.Set<HinhAnhCoSo>()
-                .Where(x => x.MaCoSo == id)
+            var data = coSo.HinhAnhCoSos
                 .OrderByDescending(x => x.IsMain)
                 .ThenBy(x => x.MaAnh)
                 .Select(x => new
                 {
                     x.MaAnh,
-                    x.MaCoSo,
+                    MaCoSo = id,
                     x.UrlAnh,
                     x.IsMain
                 })
-                .ToListAsync();
+                .ToList();
 
             return Ok(data);
         }
-        //upload/thêm ảnh cho 1 cơ sở
+
         [HttpPost("{id}/images")]
         public async Task<IActionResult> UploadImage(int id, IFormFile file)
         {
@@ -358,25 +343,14 @@ namespace PhongTroAPI.Controllers
                 return Unauthorized();
             }
 
-            var coSo = await _context.CoSos.FindAsync(id);
-            if (coSo == null)
-                return NotFound("Không tìm thấy cơ sở");
+            var coSo = await _coSoRepo.GetByIdAsync(id);
+            if (coSo == null) return NotFound("Không tìm thấy cơ sở");
 
-            if (coSo.MaQuanLy != maQuanLy)
-            {
-                return Forbid();
-            }
+            if (coSo.MaQuanLy != maQuanLy) return Forbid();
 
-            if (file == null || file.Length == 0)
-                return BadRequest("File ảnh không hợp lệ");
+            if (file == null || file.Length == 0) return BadRequest("File ảnh không hợp lệ");
 
-            var folder = Path.Combine(
-                Directory.GetCurrentDirectory(),
-                "wwwroot",
-                "uploads",
-                "co_so"
-            );
-
+            var folder = Path.Combine(Directory.GetCurrentDirectory(), "wwwroot", "uploads", "co_so");
             Directory.CreateDirectory(folder);
 
             var extension = Path.GetExtension(file.FileName);
@@ -388,31 +362,29 @@ namespace PhongTroAPI.Controllers
                 await file.CopyToAsync(stream);
             }
 
-            var hasMain = await _context.Set<HinhAnhCoSo>()
-                .AnyAsync(x => x.MaCoSo == id && x.IsMain);
-
+            var hasMain = coSo.HinhAnhCoSos.Any(x => x.IsMain);
             var imageUrl = $"{Request.Scheme}://{Request.Host}/uploads/co_so/{fileName}";
+            var newMaAnh = await _counterRepo.GetNextSequenceValueAsync("hinhanhcoso_id");
 
-            var image = new HinhAnhCoSo
+            var image = new HinhAnhItem
             {
-                MaCoSo = id,
+                MaAnh = newMaAnh,
                 UrlAnh = imageUrl,
                 IsMain = !hasMain
             };
 
-            _context.Set<HinhAnhCoSo>().Add(image);
-            await _context.SaveChangesAsync();
+            coSo.HinhAnhCoSos.Add(image);
+            await _coSoRepo.UpdateAsync(id, coSo);
 
             return Ok(new
             {
                 image.MaAnh,
-                image.MaCoSo,
+                MaCoSo = id,
                 image.UrlAnh,
                 image.IsMain
             });
         }
 
-        //upload/thêm ảnh cho 1 cơ sở qua URL
         [HttpPost("{id}/images/url")]
         public async Task<IActionResult> UploadImageUrl(int id, [FromBody] CoSoImageUrlDto dto)
         {
@@ -422,40 +394,35 @@ namespace PhongTroAPI.Controllers
                 return Unauthorized();
             }
 
-            var coSo = await _context.CoSos.FindAsync(id);
-            if (coSo == null)
-                return NotFound("Không tìm thấy cơ sở");
+            var coSo = await _coSoRepo.GetByIdAsync(id);
+            if (coSo == null) return NotFound("Không tìm thấy cơ sở");
 
-            if (coSo.MaQuanLy != maQuanLy)
+            if (coSo.MaQuanLy != maQuanLy) return Forbid();
+
+            if (dto == null || string.IsNullOrWhiteSpace(dto.Url)) return BadRequest("URL ảnh không hợp lệ");
+
+            var hasMain = coSo.HinhAnhCoSos.Any(x => x.IsMain);
+            var newMaAnh = await _counterRepo.GetNextSequenceValueAsync("hinhanhcoso_id");
+
+            var image = new HinhAnhItem
             {
-                return Forbid();
-            }
-
-            if (dto == null || string.IsNullOrWhiteSpace(dto.Url))
-                return BadRequest("URL ảnh không hợp lệ");
-
-            var hasMain = await _context.Set<HinhAnhCoSo>()
-                .AnyAsync(x => x.MaCoSo == id && x.IsMain);
-
-            var image = new HinhAnhCoSo
-            {
-                MaCoSo = id,
+                MaAnh = newMaAnh,
                 UrlAnh = dto.Url.Trim(),
                 IsMain = !hasMain
             };
 
-            _context.Set<HinhAnhCoSo>().Add(image);
-            await _context.SaveChangesAsync();
+            coSo.HinhAnhCoSos.Add(image);
+            await _coSoRepo.UpdateAsync(id, coSo);
 
             return Ok(new
             {
                 image.MaAnh,
-                image.MaCoSo,
+                MaCoSo = id,
                 image.UrlAnh,
                 image.IsMain
             });
         }
-        //đặt một ảnh thành ảnh đại diện của cơ sở.
+
         [HttpPut("images/{maAnh}/set-main")]
         public async Task<IActionResult> SetMainImage(int maAnh)
         {
@@ -465,28 +432,21 @@ namespace PhongTroAPI.Controllers
                 return Unauthorized();
             }
 
-            var image = await _context.Set<HinhAnhCoSo>().Include(x => x.MaCoSoNavigation).FirstOrDefaultAsync(x => x.MaAnh == maAnh);
-            if (image == null)
-                return NotFound("Không tìm thấy ảnh");
+            var allCoSo = await _coSoRepo.GetAllAsync();
+            var coSo = allCoSo.FirstOrDefault(cs => cs.HinhAnhCoSos.Any(img => img.MaAnh == maAnh));
 
-            if (image.MaCoSoNavigation == null || image.MaCoSoNavigation.MaQuanLy != maQuanLy)
+            if (coSo == null) return NotFound("Không tìm thấy ảnh");
+            if (coSo.MaQuanLy != maQuanLy) return Forbid();
+
+            foreach (var img in coSo.HinhAnhCoSos)
             {
-                return Forbid();
+                img.IsMain = img.MaAnh == maAnh;
             }
 
-            var images = await _context.Set<HinhAnhCoSo>()
-                .Where(x => x.MaCoSo == image.MaCoSo)
-                .ToListAsync();
-
-            foreach (var item in images)
-            {
-                item.IsMain = item.MaAnh == maAnh;
-            }
-
-            await _context.SaveChangesAsync();
+            await _coSoRepo.UpdateAsync(coSo.MaCoSo, coSo);
             return Ok("Đã cập nhật ảnh hiển thị chính");
         }
-        //xóa 1 ảnh của cơ sở.
+
         [HttpDelete("images/{maAnh}")]
         public async Task<IActionResult> DeleteImage(int maAnh)
         {
@@ -496,35 +456,28 @@ namespace PhongTroAPI.Controllers
                 return Unauthorized();
             }
 
-            var image = await _context.Set<HinhAnhCoSo>().Include(x => x.MaCoSoNavigation).FirstOrDefaultAsync(x => x.MaAnh == maAnh);
-            if (image == null)
-                return NotFound("Không tìm thấy ảnh");
+            var allCoSo = await _coSoRepo.GetAllAsync();
+            var coSo = allCoSo.FirstOrDefault(cs => cs.HinhAnhCoSos.Any(img => img.MaAnh == maAnh));
 
-            if (image.MaCoSoNavigation == null || image.MaCoSoNavigation.MaQuanLy != maQuanLy)
-            {
-                return Forbid();
-            }
+            if (coSo == null) return NotFound("Không tìm thấy ảnh");
+            if (coSo.MaQuanLy != maQuanLy) return Forbid();
 
-            var maCoSo = image.MaCoSo;
+            var image = coSo.HinhAnhCoSos.First(img => img.MaAnh == maAnh);
             var wasMain = image.IsMain;
             var imageUrl = image.UrlAnh;
 
-            _context.Set<HinhAnhCoSo>().Remove(image);
-            await _context.SaveChangesAsync();
+            coSo.HinhAnhCoSos.Remove(image);
 
             if (wasMain)
             {
-                var nextImage = await _context.Set<HinhAnhCoSo>()
-                    .Where(x => x.MaCoSo == maCoSo)
-                    .OrderBy(x => x.MaAnh)
-                    .FirstOrDefaultAsync();
-
+                var nextImage = coSo.HinhAnhCoSos.OrderBy(x => x.MaAnh).FirstOrDefault();
                 if (nextImage != null)
                 {
                     nextImage.IsMain = true;
-                    await _context.SaveChangesAsync();
                 }
             }
+
+            await _coSoRepo.UpdateAsync(coSo.MaCoSo, coSo);
 
             if (!string.IsNullOrWhiteSpace(imageUrl))
             {
@@ -532,8 +485,6 @@ namespace PhongTroAPI.Controllers
                 {
                     var uri = new Uri(imageUrl);
                     var relativePath = uri.AbsolutePath.TrimStart('/').Replace('/', Path.DirectorySeparatorChar);
-                    var fullPath = Path.Combine(Directory.GetCurrentDirectory(), "wwwroot", relativePath.Replace($"uploads{Path.DirectorySeparatorChar}", ""));
-
                     var actualPath = Path.Combine(Directory.GetCurrentDirectory(), "wwwroot", "uploads", "co_so", Path.GetFileName(relativePath));
 
                     if (System.IO.File.Exists(actualPath))
@@ -541,15 +492,11 @@ namespace PhongTroAPI.Controllers
                         System.IO.File.Delete(actualPath);
                     }
                 }
-                catch
-                {
-                }
+                catch { }
             }
 
             return Ok("Đã xóa ảnh");
         }
-
-        // DELETE: xóa cơ sở
 
         [HttpDelete("{id}")]
         public async Task<IActionResult> Delete(int id)
@@ -560,68 +507,36 @@ namespace PhongTroAPI.Controllers
                 return Unauthorized();
             }
 
-            var coSo = await _context.CoSos
-                .Include(x => x.MaTienIches)
-                .FirstOrDefaultAsync(x => x.MaCoSo == id);
+            var coSo = await _coSoRepo.GetByIdAsync(id);
+            if (coSo == null) return NotFound("Không tìm thấy cơ sở");
+            if (coSo.MaQuanLy != maQuanLy) return Forbid();
 
-            if (coSo == null)
-                return NotFound("Không tìm thấy cơ sở");
+            var tatCaPhong = await _phongRepo.GetAllAsync();
+            var phongs = tatCaPhong.Where(p => p.MaCoSo == id).ToList();
 
-            if (coSo.MaQuanLy != maQuanLy)
+            foreach (var p in phongs)
             {
-                return Forbid();
+                await _phongRepo.DeleteAsync(p.MaPhong);
             }
 
-            var phongs = await _context.Phongs
-                .Include(p => p.MaTienIches)
-                .Where(p => p.MaCoSo == id)
-                .ToListAsync();
-
-            var phongIds = phongs.Select(p => p.MaPhong).ToList();
-
-            var hinhAnhPhong = await _context.HinhAnhPhongs
-                .Where(h => phongIds.Contains(h.MaPhong))
-                .ToListAsync();
-
-            var hinhAnhCoSo = await _context.HinhAnhCoSos
-                .Where(h => h.MaCoSo == id)
-                .ToListAsync();
-
-            foreach (var phong in phongs)
-            {
-                phong.MaTienIches.Clear();
-            }
-
-            coSo.MaTienIches.Clear();
-
-            _context.HinhAnhPhongs.RemoveRange(hinhAnhPhong);
-            _context.Phongs.RemoveRange(phongs);
-            _context.HinhAnhCoSos.RemoveRange(hinhAnhCoSo);
-            _context.CoSos.Remove(coSo);
-
-            await _context.SaveChangesAsync();
+            await _coSoRepo.DeleteAsync(id);
 
             return Ok("Đã xóa cơ sở");
         }
-        //lấy danh sách tất cả tiện ích
+
         [HttpGet("tien-ich")]
         [AllowAnonymous]
         public async Task<IActionResult> GetTienIch()
         {
-            var data = await _context.TienIches
-                .AsNoTracking()
-                .OrderBy(x => x.TenTienIch)
-                .Select(x => new
-                {
-                    x.MaTienIch,
-                    x.TenTienIch
-                })
-                .ToListAsync();
+            var data = await _tienIchRepo.GetAllAsync();
+            var result = data.OrderBy(x => x.TenTienIch).Select(x => new
+            {
+                x.MaTienIch,
+                x.TenTienIch
+            }).ToList();
 
-            return Ok(data);
+            return Ok(result);
         }
-
-        //thêm tiện ích mới vào
 
         [HttpPost("tien-ich")]
         public async Task<IActionResult> CreateTienIch([FromBody] TienIchCreateDto model)
@@ -630,35 +545,26 @@ namespace PhongTroAPI.Controllers
                 return BadRequest("Tên tiện ích không được trống");
 
             var ten = model.TenTienIch.Trim();
-
-            var existed = await _context.TienIches
-                .FirstOrDefaultAsync(x => x.TenTienIch != null && x.TenTienIch.ToLower() == ten.ToLower());
+            var allTienIch = await _tienIchRepo.GetAllAsync();
+            var existed = allTienIch.FirstOrDefault(x => x.TenTienIch != null && x.TenTienIch.ToLower() == ten.ToLower());
 
             if (existed != null)
             {
-                return Ok(new
-                {
-                    existed.MaTienIch,
-                    existed.TenTienIch
-                });
+                return Ok(new { existed.MaTienIch, existed.TenTienIch });
             }
 
+            var maTienIch = await _counterRepo.GetNextSequenceValueAsync("tienich_id");
             var tienIch = new TienIch
             {
+                MaTienIch = maTienIch,
                 TenTienIch = ten
             };
 
-            _context.TienIches.Add(tienIch);
-            await _context.SaveChangesAsync();
+            await _tienIchRepo.CreateAsync(tienIch);
 
-            return Ok(new
-            {
-                tienIch.MaTienIch,
-                tienIch.TenTienIch
-            });
+            return Ok(new { tienIch.MaTienIch, tienIch.TenTienIch });
         }
 
-        // PATCH: cập nhật giá điện nước của cơ sở
         [HttpPatch("{id}/utility-prices")]
         public async Task<IActionResult> UpdateUtilityPrices(int id, [FromBody] PhongTroAPI.DTOs.UpdateUtilityPricesDto dto)
         {
@@ -668,18 +574,13 @@ namespace PhongTroAPI.Controllers
                 return Unauthorized();
             }
 
-            var coso = await _context.CoSos.FindAsync(id);
-            if (coso == null)
-                return NotFound("Không tìm thấy cơ sở");
-
-            if (coso.MaQuanLy != maQuanLy)
-            {
-                return Forbid();
-            }
+            var coso = await _coSoRepo.GetByIdAsync(id);
+            if (coso == null) return NotFound("Không tìm thấy cơ sở");
+            if (coso.MaQuanLy != maQuanLy) return Forbid();
 
             coso.DonGiaDien = dto.DonGiaDien;
             coso.DonGiaNuoc = dto.DonGiaNuoc;
-            await _context.SaveChangesAsync();
+            await _coSoRepo.UpdateAsync(id, coso);
 
             return Ok(new { message = "Cập nhật đơn giá thành công", donGiaDien = coso.DonGiaDien, donGiaNuoc = coso.DonGiaNuoc });
         }

@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
-using PhongTroAPI.Entities;
+using PhongTroAPI.Repositories.Mongo;
+using System.Linq;
+using System.Threading.Tasks;
 
 namespace PhongTroAPI.Controllers
 {
@@ -8,19 +9,19 @@ namespace PhongTroAPI.Controllers
     [Route("api/[controller]")]
     public class BankController : ControllerBase
     {
-        private readonly QuanLyPhongTroContext _context;
+        private readonly NganHangRepository _nganHangRepo;
 
-        public BankController(QuanLyPhongTroContext context)
+        public BankController(NganHangRepository nganHangRepo)
         {
-            _context = context;
+            _nganHangRepo = nganHangRepo;
         }
 
         // GET: api/Bank
         [HttpGet]
         public async Task<IActionResult> GetAll()
         {
-            var banks = await _context.NganHangs
-                .AsNoTracking()
+            var banks = await _nganHangRepo.GetAllAsync();
+            var data = banks
                 .OrderBy(b => b.TenVietTat)
                 .Select(b => new
                 {
@@ -29,9 +30,9 @@ namespace PhongTroAPI.Controllers
                     b.TenVietTat,
                     b.MaBin
                 })
-                .ToListAsync();
+                .ToList();
 
-            return Ok(banks);
+            return Ok(data);
         }
     }
 }

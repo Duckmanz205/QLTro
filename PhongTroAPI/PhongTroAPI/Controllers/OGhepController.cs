@@ -19,9 +19,9 @@ namespace PhongTroAPI.Controllers
 
         // GET: api/OGhep/chi-tiet/{maPhong}
         [HttpGet("chi-tiet/{maPhong}")]
-        public IActionResult GetChiTietOGhep(int maPhong)
+        public async Task<IActionResult> GetChiTietOGhep(int maPhong)
         {
-            var result = _oGhepService.GetChiTietOGhepTheoPhong(maPhong);
+            var result = await _oGhepService.GetChiTietOGhepTheoPhongAsync(maPhong);
             
             if (result == null)
                 return NotFound(new { message = "Không tìm thấy phòng yêu cầu hoặc phòng chưa được kích hoạt hệ thống!" });
@@ -31,36 +31,36 @@ namespace PhongTroAPI.Controllers
 
         // BỔ SUNG ĐỦ LUỒNG ROUTER CRUD ĐỂ APP MOBILE GỌI ĐƯỢC
         [HttpPost]
-        public IActionResult Create([FromBody] CreateOGhepDto dto)
+        public async Task<IActionResult> Create([FromBody] CreateOGhepDto dto)
         {
-            var res = _oGhepService.CreateOGhep(dto);
+            var res = await _oGhepService.CreateOGhepAsync(dto);
             return res ? Ok(true) : BadRequest("Thất bại, vui lòng kiểm tra mã khách thuê.");
         }
 
         [HttpGet]
-        public IActionResult GetAll()
+        public async Task<IActionResult> GetAll()
         {
-            return Ok(_oGhepService.GetAllOGheps());
+            return Ok(await _oGhepService.GetAllOGhepsAsync());
         }
 
         [HttpGet("{id}")]
-        public IActionResult GetById(int id)
+        public async Task<IActionResult> GetById(int id)
         {
-            var data = _oGhepService.GetOGhepById(id);
+            var data = await _oGhepService.GetOGhepByIdAsync(id);
             if (data == null) return NotFound("Bài đăng không tồn tại!");
             return Ok(data);
         }
 
         [HttpPut("{id}")]
-        public IActionResult Update(int id, [FromBody] CreateOGhepDto dto)
+        public async Task<IActionResult> Update(int id, [FromBody] CreateOGhepDto dto)
         {
-            return _oGhepService.UpdateOGhep(id, dto) ? Ok(true) : BadRequest("Cập nhật bài đăng thất bại.");
+            return await _oGhepService.UpdateOGhepAsync(id, dto) ? Ok(true) : BadRequest("Cập nhật bài đăng thất bại.");
         }
 
         [HttpDelete("{id}")]
-        public IActionResult Delete(int id)
+        public async Task<IActionResult> Delete(int id)
         {
-            return _oGhepService.DeleteOGhep(id) ? Ok(true) : BadRequest("Xóa bài đăng thất bại.");
+            return await _oGhepService.DeleteOGhepAsync(id) ? Ok(true) : BadRequest("Xóa bài đăng thất bại.");
         }
     }
 }

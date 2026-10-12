@@ -1,6 +1,6 @@
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
-using PhongTroAPI.Entities;
+using PhongTroAPI.Repositories.Mongo;
+using System.Threading.Tasks;
 
 namespace PhongTroAPI.Controllers
 {
@@ -8,34 +8,49 @@ namespace PhongTroAPI.Controllers
     [Route("api/[controller]")]
     public class ManagerController : ControllerBase
     {
-        private readonly QuanLyPhongTroContext _context;
+        private readonly NguoiQuanLyRepository _quanLyRepo;
+        private readonly NganHangRepository _nganHangRepo;
 
-        public ManagerController(QuanLyPhongTroContext context)
+        public ManagerController(NguoiQuanLyRepository quanLyRepo, NganHangRepository nganHangRepo)
         {
-            _context = context;
+            _quanLyRepo = quanLyRepo;
+            _nganHangRepo = nganHangRepo;
         }
 
         // GET: api/Manager/{id}/bank-info
         [HttpGet("{id}/bank-info")]
         public async Task<IActionResult> GetBankInfo(int id)
         {
-            var manager = await _context.NguoiQuanLies
-                .Include(q => q.MaNganHangNavigation)
-                .FirstOrDefaultAsync(q => q.MaQuanLy == id);
+            var manager = await _quanLyRepo.GetByIdAsync(id);
 
             if (manager == null)
                 return NotFound("Không tìm thấy thông tin quản lý");
+
+            string tenNganHang = string.Empty;
+            string tenVietTat = string.Empty;
+            string maBin = string.Empty;
+
+            if (manager.ThongTinNganHang != null && manager.ThongTinNganHang.MaNganHang.HasValue)
+            {
+                var bank = await _nganHangRepo.GetByIdAsync(manager.ThongTinNganHang.MaNganHang.Value);
+                if (bank != null)
+                {
+                    tenNganHang = bank.TenNganHang ?? string.Empty;
+                    tenVietTat = bank.TenVietTat ?? string.Empty;
+                    maBin = bank.MaBin ?? string.Empty;
+                }
+            }
 
             return Ok(new
             {
                 maQuanLy = manager.MaQuanLy,
                 hoTen = manager.HoTen,
-                soTaiKhoan = manager.SoTaiKhoan ?? string.Empty,
-                tenTaiKhoan = manager.TenTaiKhoan ?? string.Empty,
-                maNganHang = manager.MaNganHang,
-                tenNganHang = manager.MaNganHangNavigation?.TenNganHang ?? string.Empty,
-                tenVietTat = manager.MaNganHangNavigation?.TenVietTat ?? string.Empty,
-                maBin = manager.MaNganHangNavigation?.MaBin ?? string.Empty
+                soTaiKhoan = manager.ThongTinNganHang?.SoTaiKhoan ?? string.Empty,
+                chuTaiKhoan = manager.ThongTinNganHang?.ChuTaiKhoan ?? string.Empty,
+                maNganHang = manager.ThongTinNganHang?.MaNganHang,
+                tenNganHang = tenNganHang,
+                tenVietTat = tenVietTat,
+                maBin = maBin
             });
         }
 
@@ -43,23 +58,24 @@ namespace PhongTroAPI.Controllers
         [HttpPut("{id}/bank-info")]
         public async Task<IActionResult> UpdateBankInfo(int id, [FromBody] UpdateBankInfoDto dto)
         {
-            var manager = await _context.NguoiQuanLies.FindAsync(id);
+            var manager = await _quanLyRepo.GetByIdAsync(id);
             if (manager == null)
                 return NotFound("Không tìm thấy thông tin quản lý");
 
             // Validate bank
             if (dto.MaNganHang.HasValue)
             {
-                var bankExists = await _context.NganHangs.AnyAsync(b => b.MaNganHang == dto.MaNganHang.Value);
-                if (!bankExists)
+                var bank = await _nganHangRepo.GetByIdAsync(dto.MaNganHang.Value);
+                if (bank == null)
                     return BadRequest("Ngân hàng không hợp lệ");
             }
 
-            manager.SoTaiKhoan = dto.SoTaiKhoan?.Trim();
-            manager.TenTaiKhoan = dto.TenTaiKhoan?.Trim();
-            manager.MaNganHang = dto.MaNganHang;
+            if (manager.ThongTinNganHang == null) manager.ThongTinNganHang = new PhongTroAPI.Entities.Embedded.ThongTinNganHangItem();
+            manager.ThongTinNganHang.SoTaiKhoan = dto.SoTaiKhoan?.Trim();
+            manager.ThongTinNganHang.ChuTaiKhoan = dto.ChuTaiKhoan?.Trim();
+            if (manager.ThongTinNganHang != null) manager.ThongTinNganHang.MaNganHang = dto.MaNganHang;
 
-            await _context.SaveChangesAsync();
+            await _quanLyRepo.UpdateAsync(id, manager);
 
             return Ok(new { message = "Cập nhật tài khoản ngân hàng thành công" });
         }
@@ -68,7 +84,7 @@ namespace PhongTroAPI.Controllers
     public class UpdateBankInfoDto
     {
         public string? SoTaiKhoan { get; set; }
-        public string? TenTaiKhoan { get; set; }
+        public string? ChuTaiKhoan { get; set; }
         public int? MaNganHang { get; set; }
     }
 }

@@ -1,12 +1,11 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
 using PhongTroAPI.DTOs;
 using PhongTroAPI.Entities;
+using PhongTroAPI.Repositories.Mongo;
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Security.Claims;
 using System.Threading.Tasks;
 
 namespace PhongTroAPI.Controllers
@@ -16,40 +15,44 @@ namespace PhongTroAPI.Controllers
     [Authorize]
     public class ThongKeController : ControllerBase
     {
-        private readonly QuanLyPhongTroContext _context;
+        private readonly CoSoRepository _coSoRepo;
+        private readonly PhongRepository _phongRepo;
+        private readonly HoaDonRepository _hoaDonRepo;
+        private readonly SuCoRepository _suCoRepo;
+        private readonly HopDongRepository _hopDongRepo;
 
-        public ThongKeController(QuanLyPhongTroContext context)
+        public ThongKeController(
+            CoSoRepository coSoRepo,
+            PhongRepository phongRepo,
+            HoaDonRepository hoaDonRepo,
+            SuCoRepository suCoRepo,
+            HopDongRepository hopDongRepo)
         {
-            _context = context;
+            _coSoRepo = coSoRepo;
+            _phongRepo = phongRepo;
+            _hoaDonRepo = hoaDonRepo;
+            _suCoRepo = suCoRepo;
+            _hopDongRepo = hopDongRepo;
         }
 
-        // -------------------------------------------------------------
-        // GET /api/thongke/admin
-        // Thống kê doanh thu & vận hành của Chủ trọ
-        // -------------------------------------------------------------
         [HttpGet("admin")]
         [Authorize(Roles = "NguoiQuanLy,Admin")]
         public async Task<IActionResult> GetAdminStats([FromQuery] int year)
         {
             if (year <= 0) year = DateTime.Now.Year;
 
-            // Lấy MaQuanLy an toàn từ Token JWT
             var maQuanLyClaim = User.FindFirst("MaQuanLy")?.Value;
             if (string.IsNullOrEmpty(maQuanLyClaim) || !int.TryParse(maQuanLyClaim, out int maQuanLy))
             {
                 return Unauthorized("Không tìm thấy mã người quản lý hợp lệ trong token.");
             }
 
-            // 1. Lấy danh sách Cơ sở & Phòng của chủ trọ này
-            var coSos = await _context.CoSos
-                .Where(cs => cs.MaQuanLy == maQuanLy)
-                .Select(cs => cs.MaCoSo)
-                .ToListAsync();
+            var tatCaCoSo = await _coSoRepo.GetAllAsync();
+            var coSos = tatCaCoSo.Where(cs => cs.MaQuanLy == maQuanLy).ToList();
+            var coSoIds = coSos.Select(cs => cs.MaCoSo).ToHashSet();
 
-            var phongs = await _context.Phongs
-                .Where(p => coSos.Contains(p.MaCoSo))
-                .Select(p => new { p.MaPhong, p.TrangThai })
-                .ToListAsync();
+            var tatCaPhong = await _phongRepo.GetAllAsync();
+            var phongs = tatCaPhong.Where(p => coSoIds.Contains(p.MaCoSo)).ToList();
 
             int tongSoPhong = phongs.Count;
             int phongDangThue = phongs.Count(p => p.TrangThai == "Đang thuê");
@@ -57,18 +60,14 @@ namespace PhongTroAPI.Controllers
             int phongBaoTri = phongs.Count(p => p.TrangThai == "Bảo trì");
             double tiLeLapDay = tongSoPhong > 0 ? Math.Round((double)phongDangThue / tongSoPhong * 100, 1) : 0;
 
-            var phongIds = phongs.Select(p => p.MaPhong).ToList();
+            var phongIds = phongs.Select(p => p.MaPhong).ToHashSet();
 
-            // 2. Lấy dữ liệu Hóa đơn
-            var hoaDons = await _context.HoaDons
-                .Where(h => phongIds.Contains(h.MaPhong) && h.Nam == year)
-                .Select(h => new { h.TongTien, h.TrangThai, h.Thang })
-                .ToListAsync();
+            var tatCaHoaDon = await _hoaDonRepo.GetAllAsync();
+            var hoaDons = tatCaHoaDon.Where(h => phongIds.Contains(h.MaPhong) && h.Nam == year).ToList();
 
             decimal tongDoanhThuDaThu = hoaDons.Where(h => h.TrangThai == "Đã thanh toán").Sum(h => h.TongTien);
             decimal tongDoanhThuChuaThu = hoaDons.Where(h => h.TrangThai == "Chưa thanh toán" || h.TrangThai == "Chờ duyệt").Sum(h => h.TongTien);
 
-            // Doanh thu chi tiết 12 tháng
             var doanhThuThangList = new List<DoanhThuThangDto>();
             for (int m = 1; m <= 12; m++)
             {
@@ -81,11 +80,8 @@ namespace PhongTroAPI.Controllers
                 });
             }
 
-            // 3. Sự cố
-            var suCos = await _context.SuCos
-                .Where(s => phongIds.Contains(s.MaPhong))
-                .Select(s => s.TrangThai)
-                .ToListAsync();
+            var tatCaSuCo = await _suCoRepo.GetAllAsync();
+            var suCos = tatCaSuCo.Where(s => phongIds.Contains(s.MaPhong)).Select(s => s.TrangThai).ToList();
 
             var dto = new AdminThongKeDto
             {
@@ -105,48 +101,54 @@ namespace PhongTroAPI.Controllers
             return Ok(dto);
         }
 
-        // -------------------------------------------------------------
-        // GET /api/thongke/user
-        // Thống kê chi tiêu & điện nước tiêu thụ của Khách thuê
-        // -------------------------------------------------------------
         [HttpGet("user")]
         [Authorize(Roles = "KhachThue")]
         public async Task<IActionResult> GetUserStats()
         {
-            // Lấy MaKhach an toàn từ Token JWT
             var maKhachClaim = User.FindFirst("MaKhach")?.Value;
             if (string.IsNullOrEmpty(maKhachClaim) || !int.TryParse(maKhachClaim, out int maKhach))
             {
                 return Unauthorized("Không tìm thấy mã khách thuê hợp lệ trong token.");
             }
 
-            // 1. Lấy thông tin phòng hiện tại & Tiền cọc từ Hợp đồng đang hoạt động
-            var hopDong = await _context.HopDongThues
-                .Include(h => h.MaPhongNavigation)
-                .ThenInclude(p => p.MaCoSoNavigation)
-                .FirstOrDefaultAsync(h => h.MaKhach == maKhach && h.TrangThai == "Còn hạn");
+            var tatCaHopDong = await _hopDongRepo.GetAllAsync();
+            var hopDong = tatCaHopDong.FirstOrDefault(h => h.MaKhach == maKhach && (h.TrangThai == "Còn hạn" || h.TrangThai == "Đang hiệu lực"));
 
             decimal tienCoc = hopDong?.TienCoc ?? 0;
-            string? tenPhong = hopDong?.MaPhongNavigation?.SoPhong;
-            string? tenCoSo = hopDong?.MaPhongNavigation?.MaCoSoNavigation?.TenCoSo;
+            string tenPhong = null;
+            string tenCoSo = null;
 
-            // 2. Lấy danh sách hóa đơn lịch sử (Sắp xếp theo năm, tháng mới nhất)
-            var hoaDons = await _context.HoaDons
-                .Where(h => h.MaKhach == maKhach)
+            if (hopDong != null)
+            {
+                var phong = await _phongRepo.GetByIdAsync(hopDong.MaPhong);
+                if (phong != null)
+                {
+                    tenPhong = phong.SoPhong;
+                    var coSo = await _coSoRepo.GetByIdAsync(phong.MaCoSo);
+                    if (coSo != null)
+                    {
+                        tenCoSo = coSo.TenCoSo;
+                    }
+                }
+            }
+
+            var tatCaHoaDon = await _hoaDonRepo.GetAllAsync();
+            var userHoaDons = tatCaHoaDon.Where(h => h.MaKhach == maKhach).ToList();
+
+            var hoaDons = userHoaDons
                 .OrderByDescending(h => h.Nam)
                 .ThenByDescending(h => h.Thang)
-                .Take(6) // Lấy 6 tháng gần nhất
-                .ToListAsync();
+                .Take(6)
+                .ToList();
 
-            decimal tongDaThanhToan = await _context.HoaDons
-                .Where(h => h.MaKhach == maKhach && h.TrangThai == "Đã thanh toán")
-                .SumAsync(h => h.TongTien);
+            decimal tongDaThanhToan = userHoaDons
+                .Where(h => h.TrangThai == "Đã thanh toán")
+                .Sum(h => h.TongTien);
 
-            decimal tongChuaThanhToan = await _context.HoaDons
-                .Where(h => h.MaKhach == maKhach && h.TrangThai != "Đã thanh toán")
-                .SumAsync(h => h.TongTien);
+            decimal tongChuaThanhToan = userHoaDons
+                .Where(h => h.TrangThai != "Đã thanh toán")
+                .Sum(h => h.TongTien);
 
-            // Xử lý list ngược lại để vẽ biểu đồ từ cũ tới mới (Trái sang Phải)
             var hoaDonsXuHuong = hoaDons.AsEnumerable().Reverse().ToList();
 
             var lichSuChiTieu = hoaDonsXuHuong.Select(h => new ChiTieuThangDto

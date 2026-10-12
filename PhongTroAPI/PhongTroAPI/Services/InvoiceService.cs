@@ -2,57 +2,77 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
-using Microsoft.EntityFrameworkCore;
 using PhongTroAPI.DTOs;
 using PhongTroAPI.Entities;
+using PhongTroAPI.Repositories.Mongo;
 
 namespace PhongTroAPI.Services;
 
 public class InvoiceService : IInvoiceService
 {
-    private readonly QuanLyPhongTroContext _context;
+    private readonly HoaDonRepository _hoaDonRepo;
+    private readonly PhongRepository _phongRepo;
+    private readonly CoSoRepository _coSoRepo;
+    private readonly KhachThueRepository _khachThueRepo;
+    private readonly HopDongRepository _hopDongRepo;
+    private readonly ChiSoRepository _chiSoRepo;
+    private readonly NguoiQuanLyRepository _quanLyRepo;
+    private readonly NganHangRepository _nganHangRepo;
+    private readonly CounterRepository _counterRepo;
 
-    public InvoiceService(QuanLyPhongTroContext context)
+    public InvoiceService(
+        HoaDonRepository hoaDonRepo,
+        PhongRepository phongRepo,
+        CoSoRepository coSoRepo,
+        KhachThueRepository khachThueRepo,
+        HopDongRepository hopDongRepo,
+        ChiSoRepository chiSoRepo,
+        NguoiQuanLyRepository quanLyRepo,
+        NganHangRepository nganHangRepo,
+        CounterRepository counterRepo)
     {
-        _context = context;
+        _hoaDonRepo = hoaDonRepo;
+        _phongRepo = phongRepo;
+        _coSoRepo = coSoRepo;
+        _khachThueRepo = khachThueRepo;
+        _hopDongRepo = hopDongRepo;
+        _chiSoRepo = chiSoRepo;
+        _quanLyRepo = quanLyRepo;
+        _nganHangRepo = nganHangRepo;
+        _counterRepo = counterRepo;
     }
 
-    /// <summary>
-    /// Lấy danh sách hóa đơn. Nếu month/year null thì lấy tất cả.
-    /// </summary>
     public async Task<List<InvoiceDto>> GetInvoicesAsync(int? month, int? year, int? maQuanLy = null)
     {
-        var query = _context.HoaDons
-            .Include(h => h.MaPhongNavigation)
-                .ThenInclude(p => p.MaCoSoNavigation)
-            .Include(h => h.MaKhachNavigation)
-            .AsQueryable();
-
+        var allInvoices = await _hoaDonRepo.GetAllAsync();
+        
         if (month.HasValue && year.HasValue)
         {
-            query = query.Where(h => h.Thang == month.Value && h.Nam == year.Value);
+            allInvoices = allInvoices.Where(h => h.Thang == month.Value && h.Nam == year.Value).ToList();
         }
 
-        if (maQuanLy.HasValue)
+        var result = new List<InvoiceDto>();
+        foreach (var h in allInvoices)
         {
-            query = query.Where(h => h.MaPhongNavigation != null &&
-                                     h.MaPhongNavigation.MaCoSoNavigation != null &&
-                                     h.MaPhongNavigation.MaCoSoNavigation.MaQuanLy == maQuanLy.Value);
-        }
+            var p = await _phongRepo.GetByIdAsync(h.MaPhong);
+            var c = p != null ? await _coSoRepo.GetByIdAsync(p.MaCoSo) : null;
+            
+            if (maQuanLy.HasValue)
+            {
+                if (c == null || c.MaQuanLy != maQuanLy.Value) continue;
+            }
 
-        var invoices = await query
-            .OrderByDescending(h => h.Nam)
-            .ThenByDescending(h => h.Thang)
-            .ThenByDescending(h => h.MaHoaDon)
-            .Select(h => new InvoiceDto
+            var k = h.MaKhach.HasValue ? await _khachThueRepo.GetByIdAsync(h.MaKhach.Value) : null;
+            var ql = c?.MaQuanLy.HasValue == true ? await _quanLyRepo.GetByIdAsync(c.MaQuanLy.Value) : null;
+
+            result.Add(new InvoiceDto
             {
                 MaHoaDon = h.MaHoaDon,
                 MaPhong = h.MaPhong,
                 MaKhach = h.MaKhach,
-                TenPhong = h.MaPhongNavigation != null ? h.MaPhongNavigation.SoPhong : string.Empty,
-                TenCoSo = h.MaPhongNavigation != null && h.MaPhongNavigation.MaCoSoNavigation != null
-                    ? h.MaPhongNavigation.MaCoSoNavigation.TenCoSo : string.Empty,
-                TenKhachThue = h.MaKhachNavigation != null ? h.MaKhachNavigation.HoTen ?? string.Empty : string.Empty,
+                TenPhong = p?.SoPhong ?? string.Empty,
+                TenCoSo = c?.TenCoSo ?? string.Empty,
+                TenKhachThue = k?.HoTen ?? string.Empty,
                 Thang = h.Thang,
                 Nam = h.Nam,
                 SoDienCu = h.ChiSoDienCu,
@@ -71,43 +91,39 @@ public class InvoiceService : IInvoiceService
                 NgayLap = h.NgayLap.HasValue ? h.NgayLap.Value.ToString("yyyy-MM-dd") : null,
                 HanThanhToan = h.HanThanhToan.HasValue ? h.HanThanhToan.Value.ToString("yyyy-MM-dd") : null,
                 NgayThanhToan = h.NgayThanhToan.HasValue ? h.NgayThanhToan.Value.ToString("yyyy-MM-dd") : null,
-                
-                SoTaiKhoan = h.MaPhongNavigation != null && h.MaPhongNavigation.MaCoSoNavigation != null && h.MaPhongNavigation.MaCoSoNavigation.MaQuanLyNavigation != null
-                    ? h.MaPhongNavigation.MaCoSoNavigation.MaQuanLyNavigation.SoTaiKhoan : null,
-                TenTaiKhoan = h.MaPhongNavigation != null && h.MaPhongNavigation.MaCoSoNavigation != null && h.MaPhongNavigation.MaCoSoNavigation.MaQuanLyNavigation != null
-                    ? h.MaPhongNavigation.MaCoSoNavigation.MaQuanLyNavigation.TenTaiKhoan : null,
-                MaBin = h.MaPhongNavigation != null && h.MaPhongNavigation.MaCoSoNavigation != null && h.MaPhongNavigation.MaCoSoNavigation.MaQuanLyNavigation != null && h.MaPhongNavigation.MaCoSoNavigation.MaQuanLyNavigation.MaNganHangNavigation != null
-                    ? h.MaPhongNavigation.MaCoSoNavigation.MaQuanLyNavigation.MaNganHangNavigation.MaBin : null,
-                TenVietTat = h.MaPhongNavigation != null && h.MaPhongNavigation.MaCoSoNavigation != null && h.MaPhongNavigation.MaCoSoNavigation.MaQuanLyNavigation != null && h.MaPhongNavigation.MaCoSoNavigation.MaQuanLyNavigation.MaNganHangNavigation != null
-                    ? h.MaPhongNavigation.MaCoSoNavigation.MaQuanLyNavigation.MaNganHangNavigation.TenVietTat : null,
-            })
-            .ToListAsync();
+                SoTaiKhoan = ql?.ThongTinNganHang?.SoTaiKhoan,
+                TenTaiKhoan = ql?.ThongTinNganHang?.ChuTaiKhoan,
+                MaBin = ql?.ThongTinNganHang?.MaNganHang.ToString(),
+                TenVietTat = ""
+            });
+        }
 
-        return invoices;
+        return result.OrderByDescending(h => h.Nam)
+                     .ThenByDescending(h => h.Thang)
+                     .ThenByDescending(h => h.MaHoaDon).ToList();
     }
 
-    /// <summary>
-    /// Lấy danh sách hóa đơn theo mã khách thuê.
-    /// </summary>
     public async Task<List<InvoiceDto>> GetInvoicesByCustomerAsync(int maKhach)
     {
-        var invoices = await _context.HoaDons
-            .Include(h => h.MaPhongNavigation)
-                .ThenInclude(p => p.MaCoSoNavigation)
-            .Include(h => h.MaKhachNavigation)
-            .Where(h => h.MaKhach == maKhach)
-            .OrderByDescending(h => h.Nam)
-            .ThenByDescending(h => h.Thang)
-            .ThenByDescending(h => h.MaHoaDon)
-            .Select(h => new InvoiceDto
+        var allInvoices = await _hoaDonRepo.GetAllAsync();
+        var customerInvoices = allInvoices.Where(h => h.MaKhach == maKhach).ToList();
+
+        var result = new List<InvoiceDto>();
+        foreach (var h in customerInvoices)
+        {
+            var p = await _phongRepo.GetByIdAsync(h.MaPhong);
+            var c = p != null ? await _coSoRepo.GetByIdAsync(p.MaCoSo) : null;
+            var k = await _khachThueRepo.GetByIdAsync(maKhach);
+            var ql = c?.MaQuanLy.HasValue == true ? await _quanLyRepo.GetByIdAsync(c.MaQuanLy.Value) : null;
+
+            result.Add(new InvoiceDto
             {
                 MaHoaDon = h.MaHoaDon,
                 MaPhong = h.MaPhong,
                 MaKhach = h.MaKhach,
-                TenPhong = h.MaPhongNavigation != null ? h.MaPhongNavigation.SoPhong : string.Empty,
-                TenCoSo = h.MaPhongNavigation != null && h.MaPhongNavigation.MaCoSoNavigation != null
-                    ? h.MaPhongNavigation.MaCoSoNavigation.TenCoSo : string.Empty,
-                TenKhachThue = h.MaKhachNavigation != null ? h.MaKhachNavigation.HoTen ?? string.Empty : string.Empty,
+                TenPhong = p?.SoPhong ?? string.Empty,
+                TenCoSo = c?.TenCoSo ?? string.Empty,
+                TenKhachThue = k?.HoTen ?? string.Empty,
                 Thang = h.Thang,
                 Nam = h.Nam,
                 SoDienCu = h.ChiSoDienCu,
@@ -126,98 +142,88 @@ public class InvoiceService : IInvoiceService
                 NgayLap = h.NgayLap.HasValue ? h.NgayLap.Value.ToString("yyyy-MM-dd") : null,
                 HanThanhToan = h.HanThanhToan.HasValue ? h.HanThanhToan.Value.ToString("yyyy-MM-dd") : null,
                 NgayThanhToan = h.NgayThanhToan.HasValue ? h.NgayThanhToan.Value.ToString("yyyy-MM-dd") : null,
+                SoTaiKhoan = ql?.ThongTinNganHang?.SoTaiKhoan,
+                TenTaiKhoan = ql?.ThongTinNganHang?.ChuTaiKhoan,
+                MaBin = ql?.ThongTinNganHang?.MaNganHang.ToString(),
+                TenVietTat = ""
+            });
+        }
 
-                SoTaiKhoan = h.MaPhongNavigation != null && h.MaPhongNavigation.MaCoSoNavigation != null && h.MaPhongNavigation.MaCoSoNavigation.MaQuanLyNavigation != null
-                    ? h.MaPhongNavigation.MaCoSoNavigation.MaQuanLyNavigation.SoTaiKhoan : null,
-                TenTaiKhoan = h.MaPhongNavigation != null && h.MaPhongNavigation.MaCoSoNavigation != null && h.MaPhongNavigation.MaCoSoNavigation.MaQuanLyNavigation != null
-                    ? h.MaPhongNavigation.MaCoSoNavigation.MaQuanLyNavigation.TenTaiKhoan : null,
-                MaBin = h.MaPhongNavigation != null && h.MaPhongNavigation.MaCoSoNavigation != null && h.MaPhongNavigation.MaCoSoNavigation.MaQuanLyNavigation != null && h.MaPhongNavigation.MaCoSoNavigation.MaQuanLyNavigation.MaNganHangNavigation != null
-                    ? h.MaPhongNavigation.MaCoSoNavigation.MaQuanLyNavigation.MaNganHangNavigation.MaBin : null,
-                TenVietTat = h.MaPhongNavigation != null && h.MaPhongNavigation.MaCoSoNavigation != null && h.MaPhongNavigation.MaCoSoNavigation.MaQuanLyNavigation != null && h.MaPhongNavigation.MaCoSoNavigation.MaQuanLyNavigation.MaNganHangNavigation != null
-                    ? h.MaPhongNavigation.MaCoSoNavigation.MaQuanLyNavigation.MaNganHangNavigation.TenVietTat : null,
-            })
-            .ToListAsync();
-
-        return invoices;
+        return result.OrderByDescending(h => h.Nam)
+                     .ThenByDescending(h => h.Thang)
+                     .ThenByDescending(h => h.MaHoaDon).ToList();
     }
 
     public async Task<InvoiceDto?> GetInvoiceByIdAsync(int id)
     {
-        var invoice = await _context.HoaDons
-            .Include(h => h.MaPhongNavigation)
-                .ThenInclude(p => p.MaCoSoNavigation)
-            .Include(h => h.MaKhachNavigation)
-            .FirstOrDefaultAsync(h => h.MaHoaDon == id);
+        var h = await _hoaDonRepo.GetByIdAsync(id);
+        if (h == null) return null;
 
-        if (invoice == null) return null;
+        var p = await _phongRepo.GetByIdAsync(h.MaPhong);
+        var c = p != null ? await _coSoRepo.GetByIdAsync(p.MaCoSo) : null;
+        var k = h.MaKhach.HasValue ? await _khachThueRepo.GetByIdAsync(h.MaKhach.Value) : null;
+        var ql = c?.MaQuanLy.HasValue == true ? await _quanLyRepo.GetByIdAsync(c.MaQuanLy.Value) : null;
 
         return new InvoiceDto
         {
-            MaHoaDon = invoice.MaHoaDon,
-            MaPhong = invoice.MaPhong,
-            MaKhach = invoice.MaKhach,
-            TenPhong = invoice.MaPhongNavigation != null ? invoice.MaPhongNavigation.SoPhong : string.Empty,
-            TenCoSo = invoice.MaPhongNavigation != null && invoice.MaPhongNavigation.MaCoSoNavigation != null
-                ? invoice.MaPhongNavigation.MaCoSoNavigation.TenCoSo : string.Empty,
-            TenKhachThue = invoice.MaKhachNavigation != null ? invoice.MaKhachNavigation.HoTen ?? string.Empty : string.Empty,
-            Thang = invoice.Thang,
-            Nam = invoice.Nam,
-            SoDienCu = invoice.ChiSoDienCu,
-            SoDienMoi = invoice.ChiSoDienMoi,
-            SoNuocCu = invoice.ChiSoNuocCu,
-            SoNuocMoi = invoice.ChiSoNuocMoi,
-            DonGiaDien = invoice.DonGiaDien,
-            DonGiaNuoc = invoice.DonGiaNuoc,
-            TienPhong = invoice.TienPhong,
-            TienDichVu = invoice.TienDichVu ?? 0,
-            MoTaDichVu = invoice.MoTaDichVu,
-            PhuPhi = invoice.PhuPhi ?? 0,
-            MoTaPhuPhi = invoice.MoTaPhuPhi,
-            TongTien = invoice.TongTien,
-            TrangThai = invoice.TrangThai ?? "Chưa thanh toán",
-            NgayLap = invoice.NgayLap.HasValue ? invoice.NgayLap.Value.ToString("yyyy-MM-dd") : null,
-            HanThanhToan = invoice.HanThanhToan.HasValue ? invoice.HanThanhToan.Value.ToString("yyyy-MM-dd") : null,
-            NgayThanhToan = invoice.NgayThanhToan.HasValue ? invoice.NgayThanhToan.Value.ToString("yyyy-MM-dd") : null,
-
-            SoTaiKhoan = invoice.MaPhongNavigation?.MaCoSoNavigation?.MaQuanLyNavigation?.SoTaiKhoan,
-            TenTaiKhoan = invoice.MaPhongNavigation?.MaCoSoNavigation?.MaQuanLyNavigation?.TenTaiKhoan,
-            MaBin = invoice.MaPhongNavigation?.MaCoSoNavigation?.MaQuanLyNavigation?.MaNganHangNavigation?.MaBin,
-            TenVietTat = invoice.MaPhongNavigation?.MaCoSoNavigation?.MaQuanLyNavigation?.MaNganHangNavigation?.TenVietTat,
+            MaHoaDon = h.MaHoaDon,
+            MaPhong = h.MaPhong,
+            MaKhach = h.MaKhach,
+            TenPhong = p?.SoPhong ?? string.Empty,
+            TenCoSo = c?.TenCoSo ?? string.Empty,
+            TenKhachThue = k?.HoTen ?? string.Empty,
+            Thang = h.Thang,
+            Nam = h.Nam,
+            SoDienCu = h.ChiSoDienCu,
+            SoDienMoi = h.ChiSoDienMoi,
+            SoNuocCu = h.ChiSoNuocCu,
+            SoNuocMoi = h.ChiSoNuocMoi,
+            DonGiaDien = h.DonGiaDien,
+            DonGiaNuoc = h.DonGiaNuoc,
+            TienPhong = h.TienPhong,
+            TienDichVu = h.TienDichVu ?? 0,
+            MoTaDichVu = h.MoTaDichVu,
+            PhuPhi = h.PhuPhi ?? 0,
+            MoTaPhuPhi = h.MoTaPhuPhi,
+            TongTien = h.TongTien,
+            TrangThai = h.TrangThai ?? "Chưa thanh toán",
+            NgayLap = h.NgayLap.HasValue ? h.NgayLap.Value.ToString("yyyy-MM-dd") : null,
+            HanThanhToan = h.HanThanhToan.HasValue ? h.HanThanhToan.Value.ToString("yyyy-MM-dd") : null,
+            NgayThanhToan = h.NgayThanhToan.HasValue ? h.NgayThanhToan.Value.ToString("yyyy-MM-dd") : null,
+            SoTaiKhoan = ql?.ThongTinNganHang?.SoTaiKhoan,
+            TenTaiKhoan = ql?.ThongTinNganHang?.ChuTaiKhoan,
+            MaBin = ql?.ThongTinNganHang?.MaNganHang.ToString(),
+            TenVietTat = ""
         };
     }
 
     public async Task<InvoiceDto> CreateInvoiceAsync(InvoiceCreateDto createDto)
     {
-        var phong = await _context.Phongs
-            .Include(p => p.MaCoSoNavigation)
-            .FirstOrDefaultAsync(p => p.MaPhong == createDto.MaPhong);
-        if (phong == null)
-        {
-            throw new Exception("Không tìm thấy phòng.");
-        }
+        var phong = await _phongRepo.GetByIdAsync(createDto.MaPhong);
+        if (phong == null) throw new Exception("Không tìm thấy phòng.");
+        
+        var coSo = await _coSoRepo.GetByIdAsync(phong.MaCoSo);
 
-        // Tự động tìm khách thuê nếu không truyền MaKhach
         int? maKhach = createDto.MaKhach;
         if (!maKhach.HasValue)
         {
-            var hopDong = await _context.HopDongThues
-                .Where(hd => hd.MaPhong == createDto.MaPhong && hd.TrangThai == "Đang hiệu lực")
-                .FirstOrDefaultAsync();
+            var hopDongs = await _hopDongRepo.GetAllAsync();
+            var hopDong = hopDongs.FirstOrDefault(hd => hd.MaPhong == createDto.MaPhong && hd.TrangThai == "Đang hiệu lực");
             if (hopDong != null)
             {
                 maKhach = hopDong.MaKhach;
             }
         }
 
-        // Logic tính toán điện nước
         decimal tienDien = (decimal)(createDto.SoDienMoi - createDto.SoDienCu) * createDto.DonGiaDien;
         decimal tienNuoc = (decimal)(createDto.SoNuocMoi - createDto.SoNuocCu) * createDto.DonGiaNuoc;
-        
-        // Tổng tiền = Tiền phòng + Tiền điện + Tiền nước + Tiền dịch vụ + Phụ phí
         decimal tongTien = phong.GiaThue + tienDien + tienNuoc + createDto.TienDichVu + createDto.PhuPhi;
+
+        int newId = await _counterRepo.GetNextSequenceValueAsync("hoadon_id");
 
         var hoaDon = new HoaDon
         {
+            MaHoaDon = newId,
             MaPhong = createDto.MaPhong,
             MaKhach = maKhach,
             Thang = createDto.Thang,
@@ -228,7 +234,7 @@ public class InvoiceService : IInvoiceService
             ChiSoNuocCu = (int)createDto.SoNuocCu,
             ChiSoNuocMoi = (int)createDto.SoNuocMoi,
             DonGiaNuoc = createDto.DonGiaNuoc,
-            TienPhong = phong.GiaThue, // Lấy giá thuê từ thông tin phòng
+            TienPhong = phong.GiaThue,
             TienDichVu = createDto.TienDichVu,
             MoTaDichVu = createDto.MoTaDichVu,
             PhuPhi = createDto.PhuPhi,
@@ -239,12 +245,11 @@ public class InvoiceService : IInvoiceService
             HanThanhToan = DateOnly.FromDateTime(DateTime.Now.AddDays(5))
         };
 
-        _context.HoaDons.Add(hoaDon);
-        await _context.SaveChangesAsync();
+        await _hoaDonRepo.CreateAsync(hoaDon);
 
-        // Đồng bộ hóa/Cập nhật hoặc Tạo mới bản ghi ChiSoDienNuoc để đánh dấu DaLapHoaDon = true
-        var chiSo = await _context.ChiSoDienNuocs
-            .FirstOrDefaultAsync(c => c.MaPhong == createDto.MaPhong && c.Thang == createDto.Thang && c.Nam == createDto.Nam);
+        var chiSos = await _chiSoRepo.GetAllAsync();
+        var chiSo = chiSos.FirstOrDefault(c => c.MaPhong == createDto.MaPhong && c.Thang == createDto.Thang && c.Nam == createDto.Nam);
+        
         if (chiSo != null)
         {
             chiSo.DaLapHoaDon = true;
@@ -253,11 +258,13 @@ public class InvoiceService : IInvoiceService
             chiSo.ChiSoNuocCu = (int)createDto.SoNuocCu;
             chiSo.ChiSoNuocMoi = (int)createDto.SoNuocMoi;
             chiSo.NgayCapNhat = DateTime.Now;
+            await _chiSoRepo.UpdateAsync(chiSo.MaChiSo, chiSo);
         }
         else
         {
             var newChiSo = new ChiSoDienNuoc
             {
+                MaChiSo = await _counterRepo.GetNextSequenceValueAsync("chisodiennuoc_id"),
                 MaPhong = createDto.MaPhong,
                 Thang = createDto.Thang,
                 Nam = createDto.Nam,
@@ -268,17 +275,17 @@ public class InvoiceService : IInvoiceService
                 DaLapHoaDon = true,
                 NgayCapNhat = DateTime.Now
             };
-            _context.ChiSoDienNuocs.Add(newChiSo);
+            await _chiSoRepo.CreateAsync(newChiSo);
         }
-        await _context.SaveChangesAsync();
 
-        // Lấy tên khách thuê
         string tenKhach = string.Empty;
         if (maKhach.HasValue)
         {
-            var khach = await _context.KhachThues.FindAsync(maKhach.Value);
+            var khach = await _khachThueRepo.GetByIdAsync(maKhach.Value);
             tenKhach = khach?.HoTen ?? string.Empty;
         }
+
+        var ql = coSo?.MaQuanLy.HasValue == true ? await _quanLyRepo.GetByIdAsync(coSo.MaQuanLy.Value) : null;
 
         return new InvoiceDto
         {
@@ -286,7 +293,7 @@ public class InvoiceService : IInvoiceService
             MaPhong = hoaDon.MaPhong,
             MaKhach = hoaDon.MaKhach,
             TenPhong = phong.SoPhong,
-            TenCoSo = phong.MaCoSoNavigation?.TenCoSo ?? string.Empty,
+            TenCoSo = coSo?.TenCoSo ?? string.Empty,
             TenKhachThue = tenKhach,
             Thang = hoaDon.Thang,
             Nam = hoaDon.Nam,
@@ -302,38 +309,34 @@ public class InvoiceService : IInvoiceService
             PhuPhi = hoaDon.PhuPhi ?? 0,
             MoTaPhuPhi = hoaDon.MoTaPhuPhi,
             TongTien = hoaDon.TongTien,
-            TrangThai = hoaDon.TrangThai ?? "Chưa thanh toán",
+            TrangThai = hoaDon.TrangThai,
             NgayLap = hoaDon.NgayLap.HasValue ? hoaDon.NgayLap.Value.ToString("yyyy-MM-dd") : null,
             HanThanhToan = hoaDon.HanThanhToan.HasValue ? hoaDon.HanThanhToan.Value.ToString("yyyy-MM-dd") : null,
-            NgayThanhToan = null,
-
-            SoTaiKhoan = phong.MaCoSoNavigation?.MaQuanLyNavigation?.SoTaiKhoan,
-            TenTaiKhoan = phong.MaCoSoNavigation?.MaQuanLyNavigation?.TenTaiKhoan,
-            MaBin = phong.MaCoSoNavigation?.MaQuanLyNavigation?.MaNganHangNavigation?.MaBin,
-            TenVietTat = phong.MaCoSoNavigation?.MaQuanLyNavigation?.MaNganHangNavigation?.TenVietTat,
+            SoTaiKhoan = ql?.ThongTinNganHang?.SoTaiKhoan,
+            TenTaiKhoan = ql?.ThongTinNganHang?.ChuTaiKhoan,
+            MaBin = ql?.ThongTinNganHang?.MaNganHang.ToString(),
+            TenVietTat = ""
         };
     }
 
     public async Task<bool> UpdateInvoiceStatusAsync(int id, InvoiceUpdateStatusDto updateDto)
     {
-        var invoice = await _context.HoaDons.FindAsync(id);
+        var invoice = await _hoaDonRepo.GetByIdAsync(id);
         if (invoice == null) return false;
 
         invoice.TrangThai = updateDto.TrangThai;
-
-        // Nếu trạng thái là "Đã thanh toán", ghi nhận ngày thanh toán
         if (updateDto.TrangThai == "Đã thanh toán")
         {
             invoice.NgayThanhToan = DateOnly.FromDateTime(DateTime.Now);
         }
 
-        await _context.SaveChangesAsync();
+        await _hoaDonRepo.UpdateAsync(id, invoice);
         return true;
     }
 
     public async Task<bool> UpdateInvoiceAsync(int id, InvoiceUpdateDto updateDto)
     {
-        var invoice = await _context.HoaDons.FindAsync(id);
+        var invoice = await _hoaDonRepo.GetByIdAsync(id);
         if (invoice == null) return false;
 
         invoice.ChiSoDienMoi = (int)updateDto.SoDienMoi;
@@ -341,7 +344,6 @@ public class InvoiceService : IInvoiceService
         invoice.PhuPhi = updateDto.PhuPhi;
         invoice.MoTaPhuPhi = updateDto.MoTaPhuPhi;
 
-        // Recalculate total amount
         int soDienTieuThu = invoice.ChiSoDienMoi - invoice.ChiSoDienCu;
         int soNuocTieuThu = invoice.ChiSoNuocMoi - invoice.ChiSoNuocCu;
         decimal tienDien = (decimal)soDienTieuThu * invoice.DonGiaDien;
@@ -349,40 +351,61 @@ public class InvoiceService : IInvoiceService
         
         invoice.TongTien = invoice.TienPhong + tienDien + tienNuoc + (invoice.TienDichVu ?? 0) + (invoice.PhuPhi ?? 0);
 
-        await _context.SaveChangesAsync();
+        await _hoaDonRepo.UpdateAsync(id, invoice);
         return true;
     }
 
     public async Task<bool> DeleteInvoiceAsync(int id)
     {
-        var invoice = await _context.HoaDons.FindAsync(id);
-        if (invoice == null) return false;
-
-        _context.HoaDons.Remove(invoice);
-        await _context.SaveChangesAsync();
+        await _hoaDonRepo.DeleteAsync(id);
         return true;
     }
 
     public async Task<bool> VerifyCustomerOwnershipAsync(int maKhach, int maQuanLy)
     {
-        return await _context.HopDongThues
-            .Include(hd => hd.MaPhongNavigation)
-                .ThenInclude(p => p.MaCoSoNavigation)
-            .AnyAsync(hd => hd.MaKhach == maKhach && hd.MaPhongNavigation.MaCoSoNavigation.MaQuanLy == maQuanLy);
+        var hopDongs = await _hopDongRepo.GetAllAsync();
+        foreach (var hd in hopDongs.Where(h => h.MaKhach == maKhach))
+        {
+            var phong = await _phongRepo.GetByIdAsync(hd.MaPhong);
+            if (phong != null)
+            {
+                var coSo = await _coSoRepo.GetByIdAsync(phong.MaCoSo);
+                if (coSo != null && coSo.MaQuanLy == maQuanLy)
+                {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     public async Task<bool> VerifyInvoiceOwnershipAsync(int maHoaDon, int maQuanLy)
     {
-        return await _context.HoaDons
-            .Include(h => h.MaPhongNavigation)
-                .ThenInclude(p => p.MaCoSoNavigation)
-            .AnyAsync(h => h.MaHoaDon == maHoaDon && h.MaPhongNavigation.MaCoSoNavigation.MaQuanLy == maQuanLy);
+        var hd = await _hoaDonRepo.GetByIdAsync(maHoaDon);
+        if (hd == null) return false;
+        var phong = await _phongRepo.GetByIdAsync(hd.MaPhong);
+        if (phong != null)
+        {
+            var coSo = await _coSoRepo.GetByIdAsync(phong.MaCoSo);
+            if (coSo != null && coSo.MaQuanLy == maQuanLy)
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     public async Task<bool> VerifyRoomOwnershipAsync(int maPhong, int maQuanLy)
     {
-        return await _context.Phongs
-            .Include(p => p.MaCoSoNavigation)
-            .AnyAsync(p => p.MaPhong == maPhong && p.MaCoSoNavigation.MaQuanLy == maQuanLy);
+        var phong = await _phongRepo.GetByIdAsync(maPhong);
+        if (phong != null)
+        {
+            var coSo = await _coSoRepo.GetByIdAsync(phong.MaCoSo);
+            if (coSo != null && coSo.MaQuanLy == maQuanLy)
+            {
+                return true;
+            }
+        }
+        return false;
     }
 }

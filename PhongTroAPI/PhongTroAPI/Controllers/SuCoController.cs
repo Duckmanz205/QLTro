@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
 using PhongTroAPI.Entities;
+using PhongTroAPI.Repositories.Mongo;
+using PhongTroAPI.Repositories.Redis;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
@@ -12,23 +13,35 @@ namespace PhongTroAPI.Controllers
     [ApiController]
     public class SuCoController : ControllerBase
     {
-        private readonly QuanLyPhongTroContext _context;
+        private readonly SuCoRepository _suCoRepo;
+        private readonly PhongRepository _phongRepo;
+        private readonly CoSoRepository _coSoRepo;
+        private readonly KhachThueRepository _khachRepo;
+        private readonly CounterRepository _counterRepo;
+        private readonly NotificationRepository _notificationRepo;
 
-        public SuCoController(QuanLyPhongTroContext context)
+        public SuCoController(
+            SuCoRepository suCoRepo,
+            PhongRepository phongRepo,
+            CoSoRepository coSoRepo,
+            KhachThueRepository khachRepo,
+            CounterRepository counterRepo,
+            NotificationRepository notificationRepo)
         {
-            _context = context;
+            _suCoRepo = suCoRepo;
+            _phongRepo = phongRepo;
+            _coSoRepo = coSoRepo;
+            _khachRepo = khachRepo;
+            _counterRepo = counterRepo;
+            _notificationRepo = notificationRepo;
         }
 
-        // GET: api/SuCo
-        // Lấy danh sách tất cả sự cố (Dành cho Admin)
         [HttpGet]
         public async Task<ActionResult<IEnumerable<SuCo>>> GetSuCos([FromQuery] int? maQuanLy)
         {
-            var query = _context.SuCos
-                .Include(s => s.MaPhongNavigation)
-                    .ThenInclude(p => p.MaCoSoNavigation)
-                .Include(s => s.MaKhachNavigation)
-                .AsQueryable();
+            var tatCaSuCo = await _suCoRepo.GetAllAsync();
+            var tatCaPhong = await _phongRepo.GetAllAsync();
+            var tatCaCoSo = await _coSoRepo.GetAllAsync();
 
             if (!maQuanLy.HasValue)
             {
@@ -39,67 +52,51 @@ namespace PhongTroAPI.Controllers
                 }
             }
 
+            var query = tatCaSuCo.AsQueryable();
+
             if (maQuanLy.HasValue)
             {
-                query = query.Where(s => s.MaPhongNavigation.MaCoSoNavigation.MaQuanLy == maQuanLy.Value);
+                var coSoIds = tatCaCoSo.Where(cs => cs.MaQuanLy == maQuanLy.Value).Select(cs => cs.MaCoSo).ToHashSet();
+                var phongIds = tatCaPhong.Where(p => coSoIds.Contains(p.MaCoSo)).Select(p => p.MaPhong).ToHashSet();
+                
+                query = query.Where(s => phongIds.Contains(s.MaPhong));
             }
 
-            return await query.OrderByDescending(s => s.NgayBao).ToListAsync();
+            return Ok(query.OrderByDescending(s => s.NgayBao).ToList());
         }
 
-        // GET: api/SuCo/user/5
-        // Lấy danh sách sự cố của một khách thuê
         [HttpGet("user/{maKhach}")]
         public async Task<ActionResult<IEnumerable<SuCo>>> GetSuCoForUser(int maKhach)
         {
-            return await _context.SuCos
-                .Where(s => s.MaKhach == maKhach)
-                .Include(s => s.MaPhongNavigation)
-                .OrderByDescending(s => s.NgayBao)
-                .ToListAsync();
+            var allSuCo = await _suCoRepo.GetAllAsync();
+            var results = allSuCo.Where(s => s.MaKhach == maKhach).OrderByDescending(s => s.NgayBao).ToList();
+            return Ok(results);
         }
 
-        // GET: api/SuCo/5
         [HttpGet("{id}")]
         public async Task<ActionResult<SuCo>> GetSuCo(int id)
         {
-            var suCo = await _context.SuCos
-                .Include(s => s.MaPhongNavigation)
-                .Include(s => s.MaKhachNavigation)
-                .FirstOrDefaultAsync(s => s.MaSuCo == id);
-
-            if (suCo == null)
-            {
-                return NotFound();
-            }
-
+            var suCo = await _suCoRepo.GetByIdAsync(id);
+            if (suCo == null) return NotFound();
             return suCo;
         }
 
-        // POST: api/SuCo
-        // Gửi báo cáo sự cố mới (Dành cho khách thuê)
         [HttpPost]
         public async Task<ActionResult<SuCo>> PostSuCo(SuCo suCo)
         {
+            suCo.MaSuCo = await _counterRepo.GetNextSequenceValueAsync("suco_id");
             suCo.NgayBao = DateTime.Now;
-            suCo.TrangThai = "Chờ xử lý"; // Trạng thái mặc định ban đầu
+            suCo.TrangThai = "Chờ xử lý";
             
-            _context.SuCos.Add(suCo);
-            await _context.SaveChangesAsync();
-
+            await _suCoRepo.CreateAsync(suCo);
             return CreatedAtAction("GetSuCo", new { id = suCo.MaSuCo }, suCo);
         }
 
-        // PUT: api/SuCo/5/status
-        // Cập nhật trạng thái sự cố (Dành cho Admin)
         [HttpPut("{id}/status")]
         public async Task<IActionResult> UpdateSuCoStatus(int id, [FromBody] string trangThai)
         {
-            var suCo = await _context.SuCos.FindAsync(id);
-            if (suCo == null)
-            {
-                return NotFound();
-            }
+            var suCo = await _suCoRepo.GetByIdAsync(id);
+            if (suCo == null) return NotFound();
 
             suCo.TrangThai = trangThai;
             if (trangThai == "Đã hoàn thành")
@@ -107,7 +104,9 @@ namespace PhongTroAPI.Controllers
                 suCo.NgayXuLy = DateTime.Now;
             }
 
-            // Tạo thông báo tự động cho Khách thuê
+            await _suCoRepo.UpdateAsync(id, suCo);
+
+            // Notify user via Redis
             var thongBao = new ThongBao
             {
                 MaKhach = suCo.MaKhach,
@@ -116,46 +115,19 @@ namespace PhongTroAPI.Controllers
                 NgayGui = DateTime.Now,
                 DaDoc = false,
             };
-            _context.ThongBaos.Add(thongBao);
-
-            try
-            {
-                await _context.SaveChangesAsync();
-            }
-            catch (DbUpdateConcurrencyException)
-            {
-                if (!SuCoExists(id))
-                {
-                    return NotFound();
-                }
-                else
-                {
-                    throw;
-                }
-            }
+            await _notificationRepo.AddNotificationAsync(suCo.MaKhach, thongBao);
 
             return NoContent();
         }
 
-        // DELETE: api/SuCo/5
         [HttpDelete("{id}")]
         public async Task<IActionResult> DeleteSuCo(int id)
         {
-            var suCo = await _context.SuCos.FindAsync(id);
-            if (suCo == null)
-            {
-                return NotFound();
-            }
+            var suCo = await _suCoRepo.GetByIdAsync(id);
+            if (suCo == null) return NotFound();
 
-            _context.SuCos.Remove(suCo);
-            await _context.SaveChangesAsync();
-
+            await _suCoRepo.DeleteAsync(id);
             return NoContent();
-        }
-
-        private bool SuCoExists(int id)
-        {
-            return _context.SuCos.Any(e => e.MaSuCo == id);
         }
     }
 }

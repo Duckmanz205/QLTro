@@ -1,17 +1,15 @@
-﻿using System;
-using System.Collections.Generic;
+using System;
+using MongoDB.Bson.Serialization.Attributes;
 
-namespace PhongTroAPI.Entities;
-
-public partial class NganHang
+namespace PhongTroAPI.Entities
 {
-    public int MaNganHang { get; set; }
-
-    public string TenNganHang { get; set; } = null!;
-
-    public string? TenVietTat { get; set; }
-
-    public string MaBin { get; set; } = null!;
-
-    public virtual ICollection<NguoiQuanLy> NguoiQuanLies { get; set; } = new List<NguoiQuanLy>();
+    public partial class NganHang
+    {
+        [BsonId]
+        public int MaNganHang { get; set; }
+        
+        public string TenNganHang { get; set; } = null!;
+        public string? TenVietTat { get; set; }
+        public string MaBin { get; set; } = null!;
+    }
 }

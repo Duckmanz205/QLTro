@@ -1,186 +1,168 @@
 using PhongTroAPI.DTOs;
 using PhongTroAPI.Entities;
-using PhongTroAPI.Repositories;
+using PhongTroAPI.Repositories.Mongo;
+using System;
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace PhongTroAPI.Services
 {
-    /// <summary>
-    /// Triển khai <see cref="IHoSoService"/>.
-    /// Chứa toàn bộ business logic: xác thực claim, phân biệt vai trò, ánh xạ Entity → DTO.
-    /// </summary>
     public class HoSoService : IHoSoService
     {
-        private readonly IHoSoRepository _repo;
+        private readonly TaiKhoanRepository _taiKhoanRepo;
+        private readonly KhachThueRepository _khachThueRepo;
+        private readonly NguoiQuanLyRepository _nguoiQuanLyRepo;
 
-        /// <summary>
-        /// Khởi tạo service với repository được inject từ DI container.
-        /// </summary>
-        /// <param name="repo">Repository truy cập dữ liệu hồ sơ.</param>
-        public HoSoService(IHoSoRepository repo)
+        public HoSoService(
+            TaiKhoanRepository taiKhoanRepo,
+            KhachThueRepository khachThueRepo,
+            NguoiQuanLyRepository nguoiQuanLyRepo)
         {
-            _repo = repo;
+            _taiKhoanRepo = taiKhoanRepo;
+            _khachThueRepo = khachThueRepo;
+            _nguoiQuanLyRepo = nguoiQuanLyRepo;
         }
 
-        // ────────────────────────────────────────────────────────────────
-        // KHÁCH THUÊ TỰ THAO TÁC HỒ SƠ BẢN THÂN
-        // ────────────────────────────────────────────────────────────────
-
-        /// <inheritdoc/>
         public async Task<HoSoDto> LayHoSoBanThanAsync(string? maKhachClaim, CancellationToken cancellationToken = default)
         {
             int maKhach = ParseMaKhachClaim(maKhachClaim);
-
-            var entity = await _repo.LayHoSoKhachThueAsync(maKhach, cancellationToken);
+            var entity = await _khachThueRepo.GetByIdAsync(maKhach);
             if (entity is null)
                 throw new KeyNotFoundException($"Không tìm thấy hồ sơ khách thuê với mã {maKhach}.");
 
             return MapKhachThueToDto(entity);
         }
 
-        /// <inheritdoc/>
         public async Task<HoSoDto> CapNhatHoSoBanThanAsync(string? maKhachClaim, CapNhatHoSoRequest request, CancellationToken cancellationToken = default)
         {
             int maKhach = ParseMaKhachClaim(maKhachClaim);
-
-            bool updated = await _repo.CapNhatHoSoKhachThueAsync(maKhach, request, cancellationToken);
-            if (!updated)
+            var entity = await _khachThueRepo.GetByIdAsync(maKhach);
+            if (entity is null)
                 throw new KeyNotFoundException($"Không tìm thấy hồ sơ khách thuê với mã {maKhach} để cập nhật.");
 
-            // Đọc lại dữ liệu mới nhất từ DB để trả về response chính xác
-            var entity = await _repo.LayHoSoKhachThueAsync(maKhach, cancellationToken);
-            return MapKhachThueToDto(entity!);
+            entity.HoTen = request.HoTen ?? entity.HoTen;
+            entity.Sdt = request.Sdt ?? entity.Sdt;
+            entity.Email = request.Email ?? entity.Email;
+            entity.Cccd = request.Cccd ?? entity.Cccd;
+            entity.GioiTinh = request.GioiTinh ?? entity.GioiTinh;
+            entity.NgaySinh = request.NgaySinh ?? entity.NgaySinh;
+            entity.DiaChiThuongTru = request.DiaChiThuongTru ?? entity.DiaChiThuongTru;
+            entity.NgayCapCccd = request.NgayCapCccd ?? entity.NgayCapCccd;
+            entity.NoiCapCccd = request.NoiCapCccd ?? entity.NoiCapCccd;
+
+            await _khachThueRepo.UpdateAsync(maKhach, entity);
+
+            return MapKhachThueToDto(entity);
         }
 
-        // ────────────────────────────────────────────────────────────────
-        // ADMIN THAO TÁC HỒ SƠ BẤT KỲ
-        // ────────────────────────────────────────────────────────────────
-
-        /// <inheritdoc/>
         public async Task<HoSoDto> AdminLayHoSoTheoIdAsync(int maTaiKhoan, CancellationToken cancellationToken = default)
         {
-            var vaiTroInfo = await _repo.LayVaiTroTaiKhoanAsync(maTaiKhoan, cancellationToken);
-            if (vaiTroInfo is null)
-                throw new KeyNotFoundException($"Không tìm thấy tài khoản với mã {maTaiKhoan}.");
+            var tk = await _taiKhoanRepo.GetByIdAsync(maTaiKhoan);
+            if (tk == null) throw new KeyNotFoundException($"Không tìm thấy tài khoản với mã {maTaiKhoan}.");
 
-            var (vaiTro, maKhach, maQuanLy) = vaiTroInfo.Value;
-
-            // Phân biệt và lấy đúng bảng theo vai trò
-            if (vaiTro == "KhachThue" && maKhach.HasValue)
+            if (tk.VaiTro == "KhachThue" && tk.MaKhach.HasValue)
             {
-                var khach = await _repo.LayHoSoKhachThueAsync(maKhach.Value, cancellationToken);
-                if (khach is null)
-                    throw new KeyNotFoundException($"Không tìm thấy hồ sơ khách thuê liên kết với tài khoản {maTaiKhoan}.");
+                var khach = await _khachThueRepo.GetByIdAsync(tk.MaKhach.Value);
+                if (khach is null) throw new KeyNotFoundException($"Không tìm thấy hồ sơ khách thuê liên kết với tài khoản {maTaiKhoan}.");
                 return MapKhachThueToDto(khach);
             }
-
-            if (vaiTro == "NguoiQuanLy" && maQuanLy.HasValue)
+            if (tk.VaiTro == "NguoiQuanLy" && tk.MaQuanLy.HasValue)
             {
-                var quanLy = await _repo.LayHoSoNguoiQuanLyAsync(maQuanLy.Value, cancellationToken);
-                if (quanLy is null)
-                    throw new KeyNotFoundException($"Không tìm thấy hồ sơ người quản lý liên kết với tài khoản {maTaiKhoan}.");
+                var quanLy = await _nguoiQuanLyRepo.GetByIdAsync(tk.MaQuanLy.Value);
+                if (quanLy is null) throw new KeyNotFoundException($"Không tìm thấy hồ sơ người quản lý liên kết với tài khoản {maTaiKhoan}.");
                 return MapNguoiQuanLyToDto(quanLy);
             }
 
-            // Trường hợp dữ liệu không nhất quán (VaiTro có nhưng FK null)
-            throw new InvalidOperationException(
-                $"Tài khoản {maTaiKhoan} có vai trò '{vaiTro}' nhưng thiếu khóa ngoại tương ứng. Dữ liệu có thể bị lỗi.");
+            throw new InvalidOperationException($"Tài khoản {maTaiKhoan} có vai trò '{tk.VaiTro}' nhưng thiếu khóa ngoại tương ứng.");
         }
 
-        /// <inheritdoc/>
         public async Task<HoSoDto> AdminCapNhatHoSoTheoIdAsync(int maTaiKhoan, AdminCapNhatHoSoRequest request, CancellationToken cancellationToken = default)
         {
-            var vaiTroInfo = await _repo.LayVaiTroTaiKhoanAsync(maTaiKhoan, cancellationToken);
-            if (vaiTroInfo is null)
-                throw new KeyNotFoundException($"Không tìm thấy tài khoản với mã {maTaiKhoan}.");
+            var tk = await _taiKhoanRepo.GetByIdAsync(maTaiKhoan);
+            if (tk == null) throw new KeyNotFoundException($"Không tìm thấy tài khoản với mã {maTaiKhoan}.");
 
-            var (vaiTro, maKhach, maQuanLy) = vaiTroInfo.Value;
-
-            if (vaiTro == "KhachThue" && maKhach.HasValue)
+            if (tk.VaiTro == "KhachThue" && tk.MaKhach.HasValue)
             {
-                bool ok = await _repo.AdminCapNhatHoSoKhachThueAsync(maKhach.Value, request, cancellationToken);
-                if (!ok)
-                    throw new KeyNotFoundException($"Không tìm thấy hồ sơ khách thuê mã {maKhach} để cập nhật.");
+                var khach = await _khachThueRepo.GetByIdAsync(tk.MaKhach.Value);
+                if (khach == null) throw new KeyNotFoundException($"Không tìm thấy hồ sơ khách thuê mã {tk.MaKhach} để cập nhật.");
+                
+                khach.HoTen = request.HoTen ?? khach.HoTen;
+                khach.Sdt = request.Sdt ?? khach.Sdt;
+                khach.Email = request.Email ?? khach.Email;
+                khach.TrangThai = request.TrangThai ?? khach.TrangThai;
+                khach.Cccd = request.Cccd ?? khach.Cccd;
+                khach.GioiTinh = request.GioiTinh ?? khach.GioiTinh;
+                khach.NgaySinh = request.NgaySinh ?? khach.NgaySinh;
+                khach.DiaChiThuongTru = request.DiaChiThuongTru ?? khach.DiaChiThuongTru;
+                khach.NgayCapCccd = request.NgayCapCccd ?? khach.NgayCapCccd;
+                khach.NoiCapCccd = request.NoiCapCccd ?? khach.NoiCapCccd;
 
-                var entity = await _repo.LayHoSoKhachThueAsync(maKhach.Value, cancellationToken);
-                return MapKhachThueToDto(entity!);
+                await _khachThueRepo.UpdateAsync(tk.MaKhach.Value, khach);
+                return MapKhachThueToDto(khach);
+            }
+            if (tk.VaiTro == "NguoiQuanLy" && tk.MaQuanLy.HasValue)
+            {
+                var quanLy = await _nguoiQuanLyRepo.GetByIdAsync(tk.MaQuanLy.Value);
+                if (quanLy == null) throw new KeyNotFoundException($"Không tìm thấy hồ sơ người quản lý mã {tk.MaQuanLy} để cập nhật.");
+                
+                quanLy.HoTen = request.HoTen ?? quanLy.HoTen;
+                quanLy.Sdt = request.Sdt ?? quanLy.Sdt;
+                quanLy.Email = request.Email ?? quanLy.Email;
+                quanLy.TrangThai = request.TrangThai ?? quanLy.TrangThai;
+
+                await _nguoiQuanLyRepo.UpdateAsync(tk.MaQuanLy.Value, quanLy);
+                return MapNguoiQuanLyToDto(quanLy);
             }
 
-            if (vaiTro == "NguoiQuanLy" && maQuanLy.HasValue)
-            {
-                bool ok = await _repo.AdminCapNhatHoSoNguoiQuanLyAsync(maQuanLy.Value, request, cancellationToken);
-                if (!ok)
-                    throw new KeyNotFoundException($"Không tìm thấy hồ sơ người quản lý mã {maQuanLy} để cập nhật.");
-
-                var entity = await _repo.LayHoSoNguoiQuanLyAsync(maQuanLy.Value, cancellationToken);
-                return MapNguoiQuanLyToDto(entity!);
-            }
-
-            throw new InvalidOperationException(
-                $"Tài khoản {maTaiKhoan} có vai trò '{vaiTro}' nhưng thiếu khóa ngoại tương ứng. Dữ liệu có thể bị lỗi.");
+            throw new InvalidOperationException($"Tài khoản {maTaiKhoan} có vai trò '{tk.VaiTro}' nhưng thiếu khóa ngoại tương ứng.");
         }
 
-        // ────────────────────────────────────────────────────────────────
-        // PRIVATE HELPERS
-        // ────────────────────────────────────────────────────────────────
-
-        /// <summary>
-        /// Phân tích chuỗi claim "MaKhach" thành int.
-        /// Ném <see cref="UnauthorizedAccessException"/> nếu claim null hoặc không phải số nguyên.
-        /// </summary>
         private static int ParseMaKhachClaim(string? maKhachClaim)
         {
             if (!int.TryParse(maKhachClaim, out int maKhach) || maKhach <= 0)
-                throw new UnauthorizedAccessException(
-                    "Token không chứa claim 'MaKhach' hợp lệ. Vui lòng đăng nhập lại.");
+                throw new UnauthorizedAccessException("Token không chứa claim 'MaKhach' hợp lệ. Vui lòng đăng nhập lại.");
             return maKhach;
         }
 
-        /// <summary>
-        /// Ánh xạ entity <see cref="KhachThue"/> sang <see cref="HoSoDto"/>.
-        /// </summary>
         private static HoSoDto MapKhachThueToDto(KhachThue entity) => new()
         {
-            MaHoSo           = entity.MaKhach,
-            VaiTro           = "KhachThue",
-            HoTen            = entity.HoTen,
-            Sdt              = entity.Sdt,
-            Email            = entity.Email,
-            TrangThai        = entity.TrangThai,
-            Cccd             = entity.Cccd,
-            NgaySinh         = entity.NgaySinh,
-            GioiTinh         = entity.GioiTinh,
-            DiaChiThuongTru  = entity.DiaChiThuongTru,
-            NgayCapCccd      = entity.NgayCapCccd,
-            NoiCapCccd       = entity.NoiCapCccd,
-            // Các trường NguoiQuanLy giữ null
-            SoTaiKhoan  = null,
+            MaHoSo = entity.MaKhach,
+            VaiTro = "KhachThue",
+            HoTen = entity.HoTen,
+            Sdt = entity.Sdt,
+            Email = entity.Email,
+            TrangThai = entity.TrangThai,
+            Cccd = entity.Cccd,
+            NgaySinh = entity.NgaySinh,
+            GioiTinh = entity.GioiTinh,
+            DiaChiThuongTru = entity.DiaChiThuongTru,
+            NgayCapCccd = entity.NgayCapCccd,
+            NoiCapCccd = entity.NoiCapCccd,
+            SoTaiKhoan = null,
             TenTaiKhoan = null,
-            MaNganHang  = null,
-            NgayTao     = null
+            MaNganHang = null,
+            NgayTao = null
         };
 
-        /// <summary>
-        /// Ánh xạ entity <see cref="NguoiQuanLy"/> sang <see cref="HoSoDto"/>.
-        /// </summary>
         private static HoSoDto MapNguoiQuanLyToDto(NguoiQuanLy entity) => new()
         {
-            MaHoSo      = entity.MaQuanLy,
-            VaiTro      = "NguoiQuanLy",
-            HoTen       = entity.HoTen,
-            Sdt         = entity.Sdt,
-            Email       = entity.Email,
-            TrangThai   = entity.TrangThai,
-            SoTaiKhoan  = entity.SoTaiKhoan,
-            TenTaiKhoan = entity.TenTaiKhoan,
-            MaNganHang  = entity.MaNganHang,
-            NgayTao     = entity.NgayTao,
-            // Các trường KhachThue giữ null
-            Cccd            = null,
-            NgaySinh        = null,
-            GioiTinh        = null,
+            MaHoSo = entity.MaQuanLy,
+            VaiTro = "NguoiQuanLy",
+            HoTen = entity.HoTen,
+            Sdt = entity.Sdt,
+            Email = entity.Email,
+            TrangThai = entity.TrangThai,
+            SoTaiKhoan = entity.ThongTinNganHang?.SoTaiKhoan,
+            TenTaiKhoan = entity.ThongTinNganHang?.ChuTaiKhoan,
+            MaNganHang = entity.ThongTinNganHang?.MaNganHang,
+            NgayTao = entity.NgayTao,
+            Cccd = null,
+            NgaySinh = null,
+            GioiTinh = null,
             DiaChiThuongTru = null,
-            NgayCapCccd     = null,
-            NoiCapCccd      = null
+            NgayCapCccd = null,
+            NoiCapCccd = null
         };
     }
 }

@@ -20,11 +20,11 @@ namespace PhongTroAPI.Controllers
 
         //  1. POST: /api/LichHen/dat-lich -> Khớp 100% với Service ngầm bên Flutter gọi sang
         [HttpPost("dat-lich")]
-        public IActionResult DatLich([FromBody] CreateLichHenDto dto)
+        public async Task<IActionResult> DatLich([FromBody] CreateLichHenDto dto)
         {
             if (!ModelState.IsValid) return BadRequest(ModelState);
 
-            var isSuccess = _lichHenService.CreateLichHen(dto);
+            var isSuccess = await _lichHenService.CreateLichHenAsync(dto);
             if (isSuccess) 
                 return Ok(new { success = true, message = "Đặt lịch xem phòng thành công!" });
                 
@@ -33,16 +33,16 @@ namespace PhongTroAPI.Controllers
 
         //  2. GET: /api/LichHen/lich-su/{maKhach} -> API mới tinh cho 2 trang UI của Thái load lịch sử
         [HttpGet("lich-su/{maKhach}")]
-        public IActionResult GetLichSuXemPhong(int maKhach)
+        public async Task<IActionResult> GetLichSuXemPhong(int maKhach)
         {
             // Gọi hàm xử lý lọc danh sách theo mã khách từ Service của ông
-            var data = _lichHenService.GetDanhSachLichHenByKhach(maKhach);
+            var data = await _lichHenService.GetDanhSachLichHenByKhachAsync(maKhach);
             return Ok(data);
         }
 
         // 3. GET: /api/LichHen – Dành cho màn hình danh sách tổng cục bên Admin (Giữ nguyên)
         [HttpGet]
-        public IActionResult GetDanhSach([FromQuery] int? maQuanLy)
+        public async Task<IActionResult> GetDanhSach([FromQuery] int? maQuanLy)
         {
             if (maQuanLy == null)
             {
@@ -56,13 +56,13 @@ namespace PhongTroAPI.Controllers
             {
                 return Ok(new List<object>());
             }
-            var data = _lichHenService.GetDanhSachLichHen(maQuanLy);
+            var data = await _lichHenService.GetDanhSachLichHenAsync(maQuanLy);
             return Ok(data);
         }
 
         // 4. PUT: /api/LichHen/{id}/status -> Dành cho nút Duyệt / Hoàn thành nhanh bên Admin (Giữ nguyên)
         [HttpPut("{id}/status")]
-        public IActionResult CapNhatTrangThai(int id, [FromBody] UpdateStatusDto dto)
+        public async Task<IActionResult> CapNhatTrangThai(int id, [FromBody] UpdateStatusDto dto)
         {
             if (dto == null || string.IsNullOrEmpty(dto.TrangThaiMoi))
             {
@@ -72,13 +72,13 @@ namespace PhongTroAPI.Controllers
             var maQuanLyClaim = User.FindFirst("MaQuanLy")?.Value;
             if (int.TryParse(maQuanLyClaim, out int maQuanLy))
             {
-                if (!_lichHenService.VerifyOwnership(id, maQuanLy))
+                if (!await _lichHenService.VerifyOwnershipAsync(id, maQuanLy))
                 {
                     return Forbid();
                 }
             }
 
-            var isSuccess = _lichHenService.UpdateTrangThaiLich(id, dto.TrangThaiMoi);
+            var isSuccess = await _lichHenService.UpdateTrangThaiLichAsync(id, dto.TrangThaiMoi);
             if (isSuccess) 
                 return Ok(new { message = $"Đã cập nhật trạng thái lịch hẹn sang: {dto.TrangThaiMoi}" });
                 
@@ -87,20 +87,20 @@ namespace PhongTroAPI.Controllers
 
         // 5. PUT: /api/LichHen/{id} -> Tiếp nhận dữ liệu chỉnh sửa thô từ màn hình AD_EditLich (Giữ nguyên)
         [HttpPut("{id}")]
-        public IActionResult SuaThongTinLichHen(int id, [FromBody] CreateLichHenDto dto)
+        public async Task<IActionResult> SuaThongTinLichHen(int id, [FromBody] CreateLichHenDto dto)
         {
             if (!ModelState.IsValid) return BadRequest(ModelState);
 
             var maQuanLyClaim = User.FindFirst("MaQuanLy")?.Value;
             if (int.TryParse(maQuanLyClaim, out int maQuanLy))
             {
-                if (!_lichHenService.VerifyOwnership(id, maQuanLy))
+                if (!await _lichHenService.VerifyOwnershipAsync(id, maQuanLy))
                 {
                     return Forbid();
                 }
             }
 
-            var isSuccess = _lichHenService.UpdateLichHen(id, dto);
+            var isSuccess = await _lichHenService.UpdateLichHenAsync(id, dto);
             if (isSuccess) 
                 return Ok(new { message = "Cập nhật thông tin lịch hẹn thành công!" });
                 
@@ -109,18 +109,18 @@ namespace PhongTroAPI.Controllers
 
         // 6. DELETE: /api/LichHen/{id} -> Nút bấm xác nhận xoá hẳn bên màn hình AD_DeleteLich (Giữ nguyên)
         [HttpDelete("{id}")]
-        public IActionResult XoaLichHen(int id)
+        public async Task<IActionResult> XoaLichHen(int id)
         {
             var maQuanLyClaim = User.FindFirst("MaQuanLy")?.Value;
             if (int.TryParse(maQuanLyClaim, out int maQuanLy))
             {
-                if (!_lichHenService.VerifyOwnership(id, maQuanLy))
+                if (!await _lichHenService.VerifyOwnershipAsync(id, maQuanLy))
                 {
                     return Forbid();
                 }
             }
 
-            var isSuccess = _lichHenService.DeleteLichHen(id);
+            var isSuccess = await _lichHenService.DeleteLichHenAsync(id);
             if (isSuccess) 
                 return Ok(new { message = "Đã xóa vĩnh viễn lịch hẹn ra khỏi cơ sở dữ liệu hệ thống!" });
                 
@@ -129,18 +129,18 @@ namespace PhongTroAPI.Controllers
 
         // 7. GET: /api/LichHen/{id} -> Lấy chi tiết 1 lịch hẹn (Giữ nguyên)
         [HttpGet("{id}")]
-        public IActionResult GetChiTietLichHen(int id)
+        public async Task<IActionResult> GetChiTietLichHen(int id)
         {
             var maQuanLyClaim = User.FindFirst("MaQuanLy")?.Value;
             if (int.TryParse(maQuanLyClaim, out int maQuanLy))
             {
-                if (!_lichHenService.VerifyOwnership(id, maQuanLy))
+                if (!await _lichHenService.VerifyOwnershipAsync(id, maQuanLy))
                 {
                     return Forbid();
                 }
             }
 
-            var data = _lichHenService.GetLichHenById(id);
+            var data = await _lichHenService.GetLichHenByIdAsync(id);
             
             if (data == null) 
                 return NotFound(new { message = "Không tìm thấy thông tin lịch hẹn này." });
